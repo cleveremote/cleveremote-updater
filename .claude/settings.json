@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install *)",
+      "Bash(sudo sed -i -e 's/host\\\\.docker\\\\.internal:3000/127.0.0.1:3000/' -e s/clv-router:5001/127.0.0.1:5001/ /etc/caddy/Caddyfile)",
+      "Bash(sudo caddy fmt --overwrite /etc/caddy/Caddyfile)",
+      "Read(//etc/caddy/**)",
+      "Bash(sudo systemctl reload caddy.service)",
+      "Bash(sudo systemctl status caddy.service --no-pager -l)",
+      "Bash(sudo journalctl -u caddy.service --no-pager -n 15)",
+      "Bash(curl -sk -o /dev/null -w \"root: HTTP %{http_code}\\\\n\" https://127.0.0.1/)",
+      "Bash(curl -sk -o /dev/null -w \"ping: HTTP %{http_code}\\\\n\" https://127.0.0.1/ping)",
+      "Bash(systemctl is-active *)",
+      "Bash(sudo systemctl status avahi-daemon --no-pager -l)",
+      "Bash(sudo ufw status verbose)",
+      "Bash(sudo iptables -L -n -v)",
+      "Bash(sudo ss -tlnp)",
+      "Bash(ip -4 addr show)",
+      "Bash(npx jest *)"
+    ]
+  }
+}

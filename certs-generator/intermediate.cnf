@@ -1,0 +1,14 @@
+[req]
+distinguished_name = req_distinguished_name
+x509_extensions = v3_intermediate_ca
+prompt = no
+
+[req_distinguished_name]
+CN = MyApp Intermediate CA
+O  = MyOrg
+
+[v3_intermediate_ca]
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always,issuer
+basicConstraints = critical, CA:TRUE, pathlen:0   # ← manquant chez toi
+keyUsage = critical, digitalSignature, cRLSign, keyCertSign
