@@ -4,12 +4,15 @@ import { ConnectWifiDto } from './dto/connect-wifi.dto';
 import { StartHotspotDto } from './dto/start-hotspot.dto';
 import { ConfigureDto } from './dto/configure.dto';
 import { ConfigureService } from './configure.service';
+import { BoxModeService } from './box-mode.service';
+import { BoxModeStatus } from './box-mode.model';
 
 @Controller('updater')
 export class WifiController {
     public constructor(
         private readonly _wifiService: WifiService,
-        private readonly _configureService: ConfigureService
+        private readonly _configureService: ConfigureService,
+        private readonly _boxModeService: BoxModeService
     ) {
     }
 
@@ -36,6 +39,12 @@ export class WifiController {
     @Get('getStatus')
     public getStatus(): Promise<WifiStatus> {
         return this._wifiService.getStatus();
+    }
+
+    // Mode de la box (setup / recovery / normal...) : à appeler par le front dès qu'il joint la box
+    @Get('getMode')
+    public getMode(): Promise<BoxModeStatus> {
+        return this._boxModeService.getMode();
     }
 
     @Get('getNetworksList')

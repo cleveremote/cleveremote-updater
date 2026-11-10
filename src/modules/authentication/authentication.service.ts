@@ -35,6 +35,10 @@ export class AuthenticationService implements OnApplicationBootstrap {
         return true;
     }
 
+    public hasConfiguredAccount(): Promise<boolean> {
+        return this._authenticationRepository.existsConfigured();
+    }
+
     public async checkPassword(data: AuthenticationModel): Promise<boolean> {
         const isValid = await bcrypt.compare(data.password, (await this._authenticationRepository.get()).password);
         if (!isValid) {

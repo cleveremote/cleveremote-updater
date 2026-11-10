@@ -112,7 +112,7 @@ describe('WifiService', () => {
         expect(logger.warn).toHaveBeenCalled();
     });
 
-    it('connect activates the requested network and cleans up the hotspot profile afterwards', async () => {
+    it('connect frees the radio by removing the hotspot profile, then activates the requested network', async () => {
         ConfigureNmcliRun({
             activeStdout: 'HomeNetwork:wlan0:wifi',
             deviceStdout: 'GENERAL.STATE:100 (connected)\nGENERAL.CONNECTION:HomeNetwork',
@@ -122,9 +122,9 @@ describe('WifiService', () => {
         const status = await service.connect({ ssid: 'HomeNetwork', password: 'housepass1' });
 
         const calledArgSets = nmcli.run.mock.calls.map((call) => call[0]);
-        expect(calledArgSets[0]).toEqual(['device', 'wifi', 'connect', 'HomeNetwork', 'password', 'housepass1', 'ifname', 'wlan0']);
-        expect(calledArgSets[1]).toEqual(['connection', 'down', 'cleveremote-hotspot']);
-        expect(calledArgSets[2]).toEqual(['connection', 'delete', 'cleveremote-hotspot']);
+        expect(calledArgSets[0]).toEqual(['connection', 'down', 'cleveremote-hotspot']);
+        expect(calledArgSets[1]).toEqual(['connection', 'delete', 'cleveremote-hotspot']);
+        expect(calledArgSets[2]).toEqual(['device', 'wifi', 'connect', 'HomeNetwork', 'password', 'housepass1', 'ifname', 'wlan0']);
         expect(status.mode).toBe('client');
         expect(status.connectionName).toBe('HomeNetwork');
         expect(status.ssid).toBe('HomeNetwork');
@@ -198,6 +198,37 @@ describe('WifiService', () => {
         const loggedArgs = logger.error.mock.calls[0][0].args;
         expect(loggedArgs).toContain('***');
         expect(loggedArgs).not.toContain('supersecret');
+    });
+
+    it('getLinkState distinguishes hotspot, client and transitional states', async () => {
+        ConfigureNmcliRun({ deviceStdout: 'GENERAL.STATE:100 (connected)\nGENERAL.CONNECTION:cleveremote-hotspot' });
+        await expect(service.getLinkState()).resolves.toBe('hotspot');
+        ConfigureNmcliRun({ deviceStdout: 'GENERAL.STATE:100 (connected)\nGENERAL.CONNECTION:HomeNetwork' });
+        await expect(service.getLinkState()).resolves.toBe('client');
+        ConfigureNmcliRun({ deviceStdout: 'GENERAL.STATE:70 (connecting (getting IP configuration))\nGENERAL.CONNECTION:HomeNetwork' });
+        await expect(service.getLinkState()).resolves.toBe('none');
+    });
+
+    it('getSavedWifiSsids lists saved client WiFi profiles, excluding the hotspot and other connection types', async () => {
+        nmcli.run.mockImplementation((args: string[]) => {
+            if (args.includes('NAME,TYPE')) {
+                return Promise.resolve({
+                    stdout: 'HomeNetwork:802-11-wireless\ncleveremote-hotspot:802-11-wireless\nWired connection 1:802-3-ethernet\nlo:loopback\n',
+                    stderr: ''
+                });
+            }
+            if (args.includes('802-11-wireless.ssid')) {
+                return Promise.resolve({ stdout: `802-11-wireless.ssid:${args[args.length - 1]}-ssid`, stderr: '' });
+            }
+            return Promise.resolve({ stdout: '', stderr: '' });
+        });
+        await expect(service.getSavedWifiSsids()).resolves.toEqual(['HomeNetwork-ssid']);
+    });
+
+    it('reconnectClient asks NetworkManager to connect the interface and ignores failures', async () => {
+        nmcli.run.mockRejectedValue(new NmcliError('failed', [], 3, '', 'Error: Timeout expired', true));
+        await expect(service.reconnectClient()).resolves.toBeUndefined();
+        expect(nmcli.run).toHaveBeenCalledWith(['-w', '10', 'device', 'connect', 'wlan0']);
     });
 
     describe('background rescan', () => {

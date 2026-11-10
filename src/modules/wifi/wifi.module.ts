@@ -4,13 +4,14 @@ import { WifiController } from './wifi.controller';
 import { WifiService } from './wifi.service';
 import { NmcliExecutorService } from './nmcli-executor.service';
 import { ConfigureService } from './configure.service';
+import { BoxModeService } from './box-mode.service';
 import { AuthenticationModule } from '../authentication/authentication.module';
 import { GlobalSettingsModule } from '../global-settings/global-settings.module';
 
 @Module({
     imports: [ConfigModule, AuthenticationModule, GlobalSettingsModule],
     controllers: [WifiController],
-    providers: [WifiService, NmcliExecutorService, ConfigureService]
+    providers: [WifiService, NmcliExecutorService, ConfigureService, BoxModeService]
 })
 export class WifiModule {
 }
