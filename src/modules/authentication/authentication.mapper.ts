@@ -6,6 +6,7 @@ export class AuthenticationMapper {
         const model = new AuthenticationModel();
         model.id = authentication._id;
         model.login = authentication.login;
+        model.email = authentication.email ?? null;
         model.password = authentication.password;
         model.role = authentication.role;
         model.deletedAt = authentication.deletedAt;
@@ -15,6 +16,8 @@ export class AuthenticationMapper {
     public static mapToSchema(model: AuthenticationModel): Authentication {
         const authentication = new Authentication();
         authentication.login = model.login;
+        // undefined => champ ignore par mongoose lors d'un update (email existant conserve)
+        authentication.email = model.email;
         authentication.password = model.password;
         authentication.role = model.role;
         authentication.deletedAt = model.deletedAt;

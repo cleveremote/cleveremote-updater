@@ -5,9 +5,10 @@ import { WifiService } from './wifi.service';
 import { NmcliExecutorService } from './nmcli-executor.service';
 import { ConfigureService } from './configure.service';
 import { AuthenticationModule } from '../authentication/authentication.module';
+import { GlobalSettingsModule } from '../global-settings/global-settings.module';
 
 @Module({
-    imports: [ConfigModule, AuthenticationModule],
+    imports: [ConfigModule, AuthenticationModule, GlobalSettingsModule],
     controllers: [WifiController],
     providers: [WifiService, NmcliExecutorService, ConfigureService]
 })

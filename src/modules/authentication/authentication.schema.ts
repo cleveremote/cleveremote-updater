@@ -13,6 +13,9 @@ export class Authentication {
     @Prop({ required: true })
     public login: string;
 
+    @Prop({ type: String, default: null, trim: true, lowercase: true })
+    public email: string | null;
+
     @Prop({ required: true })
     public password: string;
 

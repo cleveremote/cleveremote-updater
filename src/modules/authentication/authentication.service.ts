@@ -43,6 +43,7 @@ export class AuthenticationService implements OnApplicationBootstrap {
         return isValid;
     }
 
+    // login deja present => mise a jour (mot de passe, role, reactivation), sinon creation
     public async createUser(model: AuthenticationModel): Promise<AuthenticationModel> {
         const salt = bcrypt.genSaltSync(13);
         const user: AuthenticationModel = {
@@ -51,6 +52,12 @@ export class AuthenticationService implements OnApplicationBootstrap {
             role: model.role ?? Role.USER,
             deletedAt: null
         };
+        const existing = await this._authenticationRepository.findByLogin(user.login);
+        if (existing) {
+            this._logger.info({ login: user.login }, 'user already exists, updating it');
+            return this._authenticationRepository.updateByLogin(user);
+        }
+        this._logger.info({ login: user.login }, 'user not found, creating it');
         return this._authenticationRepository.create(user);
     }
 

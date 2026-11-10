@@ -26,6 +26,20 @@ export class AuthenticationRepository {
         return AuthenticationMapper.mapToModel(saved);
     }
 
+    public async findByLogin(login: string): Promise<AuthenticationModel | null> {
+        const authentication = await this._authenticationModel.findOne({ login });
+        return authentication ? AuthenticationMapper.mapToModel(authentication) : null;
+    }
+
+    public async updateByLogin(entity: AuthenticationModel): Promise<AuthenticationModel> {
+        const saved = await this._authenticationModel.findOneAndUpdate(
+            { login: entity.login },
+            AuthenticationMapper.mapToSchema(entity),
+            { new: true }
+        );
+        return AuthenticationMapper.mapToModel(saved);
+    }
+
     public async create(entity: AuthenticationModel): Promise<AuthenticationModel> {
         const created = await this._authenticationModel.create(AuthenticationMapper.mapToSchema(entity));
         return AuthenticationMapper.mapToModel(created);

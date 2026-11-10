@@ -12,8 +12,15 @@ import {
     WIFI_BACKGROUND_RESCAN_INTERVAL_MS,
     WIFI_DEFAULT_HOTSPOT_CON_NAME,
     WIFI_DEFAULT_HOTSPOT_SSID,
-    WIFI_DEFAULT_INTERFACE
+    WIFI_DEFAULT_INTERFACE,
+    WIFI_HOTSPOT_BUTTON_BCM_PIN,
+    WIFI_HOTSPOT_BUTTON_HOLD_MS,
+    WIFI_HOTSPOT_LED_BCM_PIN,
+    WIFI_HOTSPOT_LED_BLINK_MS,
+    WIFI_HOTSPOT_LED_CHECK_INTERVAL_MS
 } from './wifi.constants';
+import { GpioLongPressWatcher, watchGpioLongPress } from '../../common/tools/gpio-long-press';
+import { createGpioBlinker, GpioBlinker } from '../../common/tools/gpio-blink';
 
 export { WifiNetwork } from './nmcli-output.parser';
 
@@ -28,6 +35,10 @@ export interface WifiStatus {
 @Injectable()
 export class WifiService implements OnApplicationBootstrap, OnModuleDestroy {
     private _rescanTimer: NodeJS.Timeout | undefined;
+    private _buttonWatcher: GpioLongPressWatcher | undefined;
+    private _buttonToggleInProgress = false;
+    private _hotspotLed: GpioBlinker | undefined;
+    private _ledCheckTimer: NodeJS.Timeout | undefined;
 
     public constructor(
         private readonly _config: ConfigService,
@@ -41,6 +52,8 @@ export class WifiService implements OnApplicationBootstrap, OnModuleDestroy {
         if (os.platform() !== 'linux') {
             return;
         }
+        await this._startHotspotButtonWatch();
+        await this._initHotspotLed();
         try {
             // const status = await this.getStatus();
             // console.log('status', status);
@@ -55,10 +68,94 @@ export class WifiService implements OnApplicationBootstrap, OnModuleDestroy {
         this._rescanTimer = setInterval(() => {
             void this._backgroundRescan();
         }, WIFI_BACKGROUND_RESCAN_INTERVAL_MS);
+        this._ledCheckTimer = setInterval(() => {
+            void this._refreshHotspotLed();
+        }, WIFI_HOTSPOT_LED_CHECK_INTERVAL_MS);
     }
 
     public onModuleDestroy(): void {
         clearInterval(this._rescanTimer);
+        clearInterval(this._ledCheckTimer);
+        this._buttonWatcher?.stop();
+        this._hotspotLed?.stop();
+    }
+
+    private async _initHotspotLed(): Promise<void> {
+        try {
+            this._hotspotLed = await createGpioBlinker(WIFI_HOTSPOT_LED_BCM_PIN, {
+                onMs: WIFI_HOTSPOT_LED_BLINK_MS,
+                offMs: WIFI_HOTSPOT_LED_BLINK_MS,
+                onError: (err) => this._logger.warn({ err }, 'hotspot LED: GPIO write error')
+            });
+        } catch (err) {
+            this._logger.error({ err }, 'hotspot LED: failed to open GPIO');
+        }
+    }
+
+    // La LED clignote uniquement si le hotspot est réellement actif : wlan0 "connected" sur le profil hotspot
+    // ("connecting"/"deactivating" => éteinte). Appelée à chaque getStatus() et périodiquement, pour suivre aussi
+    // un hotspot coupé hors de l'application (nmcli manuel, NetworkManager, échec de l'AP).
+    private _syncHotspotLed(device: DeviceShowInfo): void {
+        if (device.state === 'connected' && device.connection === this._hotspotConnectionName()) {
+            this._hotspotLed?.start();
+        } else {
+            this._hotspotLed?.stop();
+        }
+    }
+
+    private async _refreshHotspotLed(): Promise<void> {
+        try {
+            const result = await this._nmcli.run(['-t', '-f', 'GENERAL.STATE,GENERAL.CONNECTION', 'device', 'show', this._interfaceName()]);
+            this._syncHotspotLed(NmcliOutputParser.parseDeviceShow(result.stdout));
+        } catch (err) {
+            // État inconnu : LED éteinte plutôt qu'un clignotement potentiellement faux
+            this._hotspotLed?.stop();
+            if (!(err instanceof NmcliError)) {
+                this._logger.warn({ err }, 'hotspot LED: failed to read device state');
+            }
+        }
+    }
+
+    private async _startHotspotButtonWatch(): Promise<void> {
+        try {
+            this._buttonWatcher = await watchGpioLongPress(
+                WIFI_HOTSPOT_BUTTON_BCM_PIN,
+                (heldMs) => {
+                    void this._toggleHotspotFromButton(heldMs);
+                },
+                {
+                    holdMs: WIFI_HOTSPOT_BUTTON_HOLD_MS,
+                    activeLow: false,
+                    onError: (err) => this._logger.warn({ err }, 'hotspot button: GPIO watch error')
+                }
+            );
+        } catch (err) {
+            this._logger.error({ err }, 'hotspot button: failed to watch GPIO');
+        }
+    }
+
+    // Appui long : démarre le hotspot s'il n'est pas actif, l'arrête sinon.
+    // Un appui pendant qu'un basculement est en cours est ignoré (nmcli prend plusieurs secondes).
+    private async _toggleHotspotFromButton(heldMs: number): Promise<void> {
+        if (this._buttonToggleInProgress) {
+            this._logger.info({ heldMs }, 'hotspot button: toggle already in progress, ignoring');
+            return;
+        }
+        this._buttonToggleInProgress = true;
+        try {
+            const { mode } = await this.getStatus();
+            if (mode === 'ap') {
+                this._logger.info({ heldMs }, 'hotspot button: long press, stopping hotspot');
+                await this.stopHotspot();
+            } else {
+                this._logger.info({ heldMs }, 'hotspot button: long press, starting hotspot');
+                await this.startHotspot({});
+            }
+        } catch (err) {
+            this._logger.error({ err }, 'hotspot button: failed to toggle hotspot');
+        } finally {
+            this._buttonToggleInProgress = false;
+        }
     }
 
     public async startHotspot(dto: StartHotspotDto): Promise<WifiStatus> {
@@ -101,6 +198,7 @@ export class WifiService implements OnApplicationBootstrap, OnModuleDestroy {
         const active = NmcliOutputParser.parseActiveConnections(activeResult.stdout).find((row) => row.device === iface);
         const device = NmcliOutputParser.parseDeviceShow(deviceResult.stdout);
         const ssid = active === undefined ? null : await this._getSsid(active.name);
+        this._syncHotspotLed(device);
         return this._buildStatus(iface, active, device, ssid);
     }
 

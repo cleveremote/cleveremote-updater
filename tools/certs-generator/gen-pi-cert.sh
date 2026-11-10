@@ -24,7 +24,8 @@ DAYS_VALID=397
 
 # --- Hostname ---------------------------------------------------------------
 HOSTNAME_SHORT="$(hostname -s)"
-PI_NAME="${HOSTNAME_SHORT}.local"
+# PI_NAME="${HOSTNAME_SHORT}.local"
+PI_NAME="ZJzzA6Di.local"
 
 echo "Hostname    : ${PI_NAME}"
 echo "Script dir  : ${SCRIPT_DIR}"
