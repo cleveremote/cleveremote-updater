@@ -4,6 +4,11 @@ export interface ActiveConnectionRow {
     type: string;
 }
 
+export interface SavedConnectionRow {
+    name: string;
+    type: string;
+}
+
 export interface DeviceShowInfo {
     state: string;
     connection: string;
@@ -41,6 +46,14 @@ export class NmcliOutputParser {
         return NmcliOutputParser._nonEmptyLines(stdout).map((line) => {
             const [name, device, type] = NmcliOutputParser.splitTerseLine(line);
             return { name: name ?? '', device: device ?? '', type: type ?? '' };
+        });
+    }
+
+    // Sortie de `nmcli -t -f NAME,TYPE connection show` (profils sauvegardés, actifs ou non)
+    public static parseConnectionList(stdout: string): SavedConnectionRow[] {
+        return NmcliOutputParser._nonEmptyLines(stdout).map((line) => {
+            const [name, type] = NmcliOutputParser.splitTerseLine(line);
+            return { name: name ?? '', type: type ?? '' };
         });
     }
 

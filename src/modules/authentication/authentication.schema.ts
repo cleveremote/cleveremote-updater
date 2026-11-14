@@ -13,11 +13,17 @@ export class Authentication {
     @Prop({ required: true })
     public login: string;
 
+    @Prop({ type: String, default: null, trim: true, lowercase: true })
+    public email: string | null;
+
     @Prop({ required: true })
     public password: string;
 
     @Prop({ type: String, enum: Role, required: true, default: Role.USER })
     public role: Role;
+
+    @Prop({ type: Boolean, default: false })
+    public isConfigured: boolean;
 
     @Prop({ type: Date, default: null })
     public deletedAt: Date | null;

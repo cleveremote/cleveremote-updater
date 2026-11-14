@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { WifiErrorMapper } from './wifi-error.mapper';
 import { NmcliError } from './nmcli.error';
+import { ErrorCode, GetErrorCode } from '../../common/errors/error-code';
 
 function BuildError(message: string, stderr: string, didTimeOut = false): NmcliError {
     return new NmcliError(message, [], 1, '', stderr, didTimeOut);
@@ -41,5 +42,16 @@ describe('WifiErrorMapper', () => {
     it('falls back to an InternalServerErrorException for unrecognized failures', () => {
         const err = BuildError('failed', 'some unexpected nmcli output');
         expect(WifiErrorMapper.toHttpException(err, 'ctx')).toBeInstanceOf(InternalServerErrorException);
+    });
+
+    it.each([
+        ['spawn nmcli ENOENT', '', false, ErrorCode.WIFI_NMCLI_UNAVAILABLE],
+        ['Command timed out', '', true, ErrorCode.WIFI_TIMEOUT],
+        ['failed', 'Error: Secrets were required, but not provided.', false, ErrorCode.WIFI_INVALID_PSK],
+        ['failed', 'Error: No network with SSID \'foo\' found.', false, ErrorCode.WIFI_NETWORK_NOT_FOUND],
+        ['failed', 'Error: Device or resource busy.', false, ErrorCode.WIFI_INTERFACE_BUSY],
+        ['failed', 'some unexpected nmcli output', false, ErrorCode.WIFI_OPERATION_FAILED]
+    ])('exposes an error code for the front (%s / %s)', (message, stderr, didTimeOut, code) => {
+        expect(GetErrorCode(WifiErrorMapper.toHttpException(BuildError(message, stderr, didTimeOut), 'ctx'))).toBe(code);
     });
 });

@@ -1,15 +1,19 @@
-import { Body, Controller, Get, Post } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Post } from '@nestjs/common';
 import { WifiService, WifiStatus, WifiNetwork } from './wifi.service';
 import { ConnectWifiDto } from './dto/connect-wifi.dto';
 import { StartHotspotDto } from './dto/start-hotspot.dto';
 import { ConfigureDto } from './dto/configure.dto';
+import { CheckPasswordDto } from './dto/check-password.dto';
 import { ConfigureService } from './configure.service';
+import { BoxModeService } from './box-mode.service';
+import { BoxModeStatus } from './box-mode.model';
 
 @Controller('updater')
 export class WifiController {
     public constructor(
         private readonly _wifiService: WifiService,
-        private readonly _configureService: ConfigureService
+        private readonly _configureService: ConfigureService,
+        private readonly _boxModeService: BoxModeService
     ) {
     }
 
@@ -33,9 +37,23 @@ export class WifiController {
         return this._configureService.configure(dto);
     }
 
+    // Vérifie le mot de passe courant (setup : étiquette, recovery : login + mot de passe) sans rien modifier.
+    // 200 true si valide, sinon 401 INVALID_CURRENT_PASSWORD
+    @Post('checkPassword')
+    @HttpCode(HttpStatus.OK)
+    public checkPassword(@Body() dto: CheckPasswordDto): Promise<boolean> {
+        return this._configureService.checkPassword(dto);
+    }
+
     @Get('getStatus')
     public getStatus(): Promise<WifiStatus> {
         return this._wifiService.getStatus();
+    }
+
+    // Mode de la box (setup / recovery / normal...) : à appeler par le front dès qu'il joint la box
+    @Get('getMode')
+    public getMode(): Promise<BoxModeStatus> {
+        return this._boxModeService.getMode();
     }
 
     @Get('getNetworksList')

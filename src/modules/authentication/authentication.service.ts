@@ -35,6 +35,10 @@ export class AuthenticationService implements OnApplicationBootstrap {
         return true;
     }
 
+    public hasConfiguredAccount(): Promise<boolean> {
+        return this._authenticationRepository.existsConfigured();
+    }
+
     public async checkPassword(data: AuthenticationModel): Promise<boolean> {
         const isValid = await bcrypt.compare(data.password, (await this._authenticationRepository.get()).password);
         if (!isValid) {
@@ -43,6 +47,27 @@ export class AuthenticationService implements OnApplicationBootstrap {
         return isValid;
     }
 
+    // Setup : mot de passe de l'étiquette, posé (haché) sur le compte technique par initAuthentication()
+    public async verifyInitialPassword(login: string, password: string): Promise<boolean> {
+        const technical = await this._authenticationRepository.findByLogin(login);
+        if (!technical?.password) {
+            this._logger.error({ login }, 'initial password check: technical account not found');
+            return false;
+        }
+        return this._comparePassword(password, technical);
+    }
+
+    // Recovery : mot de passe choisi par l'utilisateur lors du setup, pour un compte configuré et actif
+    public async verifyConfiguredCredentials(login: string, password: string): Promise<boolean> {
+        const user = await this._authenticationRepository.findByLogin(login);
+        if (!user || user.deletedAt || !AuthenticationService._isConfigured(user)) {
+            this._logger.warn({ login }, 'authentication failed: no configured account for this login');
+            return false;
+        }
+        return this._comparePassword(password, user);
+    }
+
+    // login deja present => mise a jour (mot de passe, role, reactivation), sinon creation
     public async createUser(model: AuthenticationModel): Promise<AuthenticationModel> {
         const salt = bcrypt.genSaltSync(13);
         const user: AuthenticationModel = {
@@ -51,7 +76,25 @@ export class AuthenticationService implements OnApplicationBootstrap {
             role: model.role ?? Role.USER,
             deletedAt: null
         };
+        const existing = await this._authenticationRepository.findByLogin(user.login);
+        if (existing) {
+            this._logger.info({ login: user.login }, 'user already exists, updating it');
+            return this._authenticationRepository.updateByLogin(user);
+        }
+        this._logger.info({ login: user.login }, 'user not found, creating it');
         return this._authenticationRepository.create(user);
+    }
+
+    private static _isConfigured(user: AuthenticationModel): boolean {
+        return user.isConfigured === true || !!user.email;
+    }
+
+    private async _comparePassword(password: string, user: AuthenticationModel): Promise<boolean> {
+        const isValid = await bcrypt.compare(password, user.password);
+        if (!isValid) {
+            this._logger.warn({ login: user.login }, 'authentication failed');
+        }
+        return isValid;
     }
 
     private async _managePassword(): Promise<AuthenticationModel> {

@@ -1,18 +1,29 @@
+import * as fs from 'fs';
 import * as os from 'os';
-import { Injectable, InternalServerErrorException, NotImplementedException, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
+import {
+    HttpStatus,
+    Injectable,
+    InternalServerErrorException,
+    NotImplementedException,
+    OnApplicationBootstrap,
+    OnModuleDestroy
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { NmcliExecutorService, NmcliResult } from './nmcli-executor.service';
 import { NmcliError } from './nmcli.error';
 import { ActiveConnectionRow, DeviceShowInfo, NmcliOutputParser, WifiNetwork } from './nmcli-output.parser';
 import { WifiErrorMapper } from './wifi-error.mapper';
+import { ErrorCode, ErrorBody } from '../../common/errors/error-code';
 import { ConnectWifiDto } from './dto/connect-wifi.dto';
 import { StartHotspotDto } from './dto/start-hotspot.dto';
 import {
     WIFI_BACKGROUND_RESCAN_INTERVAL_MS,
     WIFI_DEFAULT_HOTSPOT_CON_NAME,
     WIFI_DEFAULT_HOTSPOT_SSID,
-    WIFI_DEFAULT_INTERFACE
+    WIFI_DEFAULT_INTERFACE,
+    WIFI_HOTSPOT_DNSMASQ_CONF_PATH,
+    WIFI_HOTSPOT_IPV4_CIDR
 } from './wifi.constants';
 
 export { WifiNetwork } from './nmcli-output.parser';
@@ -25,6 +36,16 @@ export interface WifiStatus {
     deviceState: string;
 }
 
+// État réel du lien WiFi, lu en une seule commande nmcli (adapté à un polling fréquent) :
+// 'hotspot' / 'client' uniquement si l'interface est "connected" ("connecting"/"deactivating" => 'none').
+export type WifiLinkState = 'hotspot' | 'client' | 'none';
+
+const NMCLI_WIFI_CONNECTION_TYPE = '802-11-wireless';
+// Doit rester sous NMCLI_TIMEOUT_MS : au-delà, nmcli rend la main mais NetworkManager poursuit l'activation
+const NMCLI_DEVICE_CONNECT_WAIT_S = '10';
+
+// Adaptateur NetworkManager (nmcli) de l'interface WiFi. L'orchestration des modes (setup / recovery / normal),
+// le bouton et la LED sont dans BoxModeService.
 @Injectable()
 export class WifiService implements OnApplicationBootstrap, OnModuleDestroy {
     private _rescanTimer: NodeJS.Timeout | undefined;
@@ -36,25 +57,14 @@ export class WifiService implements OnApplicationBootstrap, OnModuleDestroy {
     ) {
     }
 
-    public async onApplicationBootstrap(): Promise<void> {
-
+    public onApplicationBootstrap(): void {
         if (os.platform() !== 'linux') {
             return;
-        }
-        try {
-            // const status = await this.getStatus();
-            // console.log('status', status);
-            // if (status.mode !== 'disconnected') {
-            //     return;
-            // }
-            // this._logger.info('no active WiFi connection at startup, starting hotspot'); ///NNN
-            await this.startHotspot({});
-        } catch (err) {
-            this._logger.error({ err }, 'failed to auto-start hotspot at startup');
         }
         this._rescanTimer = setInterval(() => {
             void this._backgroundRescan();
         }, WIFI_BACKGROUND_RESCAN_INTERVAL_MS);
+        void this._checkHotspotDnsConfig();
     }
 
     public onModuleDestroy(): void {
@@ -116,6 +126,39 @@ export class WifiService implements OnApplicationBootstrap, OnModuleDestroy {
         return NmcliOutputParser.parseWifiList(result.stdout);
     }
 
+    public async getLinkState(): Promise<WifiLinkState> {
+        this._assertLinux();
+        const result = await this._run(
+            ['-t', '-f', 'GENERAL.STATE,GENERAL.CONNECTION', 'device', 'show', this._interfaceName()],
+            'get link state'
+        );
+        return this._toLinkState(NmcliOutputParser.parseDeviceShow(result.stdout));
+    }
+
+    // SSID des réseaux WiFi client mémorisés par NetworkManager (profil hotspot exclu)
+    public async getSavedWifiSsids(): Promise<string[]> {
+        this._assertLinux();
+        const result = await this._run(['-t', '-f', 'NAME,TYPE', 'connection', 'show'], 'list saved connections');
+        const names = NmcliOutputParser.parseConnectionList(result.stdout)
+            .filter((row) => row.type === NMCLI_WIFI_CONNECTION_TYPE && row.name !== this._hotspotConnectionName())
+            .map((row) => row.name);
+        const ssids: string[] = [];
+        for (const name of names) {
+            const ssid = await this._getSsid(name);
+            if (ssid !== null && !ssids.includes(ssid)) {
+                ssids.push(ssid);
+            }
+        }
+        return ssids;
+    }
+
+    // Demande à NetworkManager d'activer le meilleur profil client disponible (y compris un profil dont
+    // l'autoconnect a été bloqué après des échecs). Le résultat se lit ensuite via getStatus()/getLinkState().
+    public async reconnectClient(): Promise<void> {
+        this._assertLinux();
+        await this._runIgnoringFailure(['-w', NMCLI_DEVICE_CONNECT_WAIT_S, 'device', 'connect', this._interfaceName()]);
+    }
+
     // Forces a real scan on a timer so scanNetworks() can safely stay on --rescan no
     // (a scan triggered mid user-request would interrupt our own hotspot beaconing).
     private async _backgroundRescan(): Promise<void> {
@@ -134,11 +177,33 @@ export class WifiService implements OnApplicationBootstrap, OnModuleDestroy {
                 '802-11-wireless.mode', 'ap',
                 '802-11-wireless.band', 'bg',
                 'ipv4.method', 'shared',
+                'ipv4.addresses', WIFI_HOTSPOT_IPV4_CIDR,
                 'wifi-sec.key-mgmt', 'wpa-psk',
                 'wifi-sec.psk', password
             ],
             'start hotspot: configure profile'
         );
+    }
+
+    // Non bloquant : sans cette config, seuls les clients mDNS (iOS, macOS, Linux) résolvent <hostname>.local sur le hotspot
+    private async _checkHotspotDnsConfig(): Promise<void> {
+        const expectedEntry = `interface-name=${os.hostname().toLowerCase()}.local,${this._interfaceName()}`;
+        let content: string;
+        try {
+            content = await fs.promises.readFile(WIFI_HOTSPOT_DNSMASQ_CONF_PATH, 'utf8');
+        } catch (err) {
+            this._logger.warn(
+                { err, path: WIFI_HOTSPOT_DNSMASQ_CONF_PATH },
+                'hotspot DNS config missing: Android/Windows clients will not resolve the box hostname on the hotspot (run tools/provisioning/setup-box-network.sh)'
+            );
+            return;
+        }
+        if (!content.toLowerCase().includes(expectedEntry)) {
+            this._logger.warn(
+                { path: WIFI_HOTSPOT_DNSMASQ_CONF_PATH, expectedEntry },
+                'hotspot DNS config does not match the current hostname/interface (re-run tools/provisioning/setup-box-network.sh)'
+            );
+        }
     }
 
     private async _restartHotspotAfterFailedConnect(): Promise<void> {
@@ -167,6 +232,13 @@ export class WifiService implements OnApplicationBootstrap, OnModuleDestroy {
         }
     }
 
+    private _toLinkState(device: DeviceShowInfo): WifiLinkState {
+        if (device.state !== 'connected') {
+            return 'none';
+        }
+        return device.connection === this._hotspotConnectionName() ? 'hotspot' : 'client';
+    }
+
     private _buildStatus(
         iface: string,
         active: ActiveConnectionRow | undefined,
@@ -184,9 +256,10 @@ export class WifiService implements OnApplicationBootstrap, OnModuleDestroy {
         const ssid = dto.ssid ?? this._config.get<string>('WIFI_HOTSPOT_SSID') ?? WIFI_DEFAULT_HOTSPOT_SSID;
         const password = 'Nya0113?'//dto.password ?? this._config.get<string>('WIFI_HOTSPOT_PASSWORD');
         if (password === undefined || password.length === 0) {
-            throw new InternalServerErrorException('WIFI_HOTSPOT_PASSWORD is not configured');
+            throw new InternalServerErrorException(ErrorBody(
+                HttpStatus.INTERNAL_SERVER_ERROR, ErrorCode.WIFI_HOTSPOT_PASSWORD_NOT_CONFIGURED, 'WIFI_HOTSPOT_PASSWORD is not configured'
+            ));
         }
-        console.log('ssid', ssid, 'password', password);
         return { ssid, password };
     }
 
@@ -200,7 +273,9 @@ export class WifiService implements OnApplicationBootstrap, OnModuleDestroy {
 
     private _assertLinux(): void {
         if (os.platform() !== 'linux') {
-            throw new NotImplementedException('WiFi provisioning is only supported on Linux (NetworkManager/nmcli)');
+            throw new NotImplementedException(ErrorBody(
+                HttpStatus.NOT_IMPLEMENTED, ErrorCode.WIFI_UNSUPPORTED_PLATFORM, 'WiFi provisioning is only supported on Linux (NetworkManager/nmcli)'
+            ));
         }
     }
 

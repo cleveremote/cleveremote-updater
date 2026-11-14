@@ -1,14 +1,18 @@
+import * as fs from 'fs';
 import * as os from 'os';
 import { WifiService } from './wifi.service';
 import { NmcliExecutorService } from './nmcli-executor.service';
 import { NmcliError } from './nmcli.error';
-import { WIFI_BACKGROUND_RESCAN_INTERVAL_MS } from './wifi.constants';
+import { WIFI_BACKGROUND_RESCAN_INTERVAL_MS, WIFI_HOTSPOT_DNSMASQ_CONF_PATH } from './wifi.constants';
+
+const VALID_DNSMASQ_CONF = 'interface-name=zjzza6di.local,wlan0/4\nlocal=/local/\n';
 
 describe('WifiService', () => {
     let service: WifiService;
     let config: { get: jest.Mock };
     let nmcli: { run: jest.Mock };
     let logger: { error: jest.Mock; warn: jest.Mock };
+    let readFile: jest.SpyInstance;
 
     function ConfigureNmcliRun(
         overrides: { activeStdout?: string; deviceStdout?: string; wifiListStdout?: string; ssidStdout?: string } = {}
@@ -42,6 +46,8 @@ describe('WifiService', () => {
         logger = { error: jest.fn(), warn: jest.fn() };
         service = new WifiService(config as any, nmcli as unknown as NmcliExecutorService, logger as any);
         jest.spyOn(os, 'platform').mockReturnValue('linux');
+        jest.spyOn(os, 'hostname').mockReturnValue('ZJzzA6Di');
+        readFile = jest.spyOn(fs.promises, 'readFile').mockResolvedValue(VALID_DNSMASQ_CONF);
     });
 
     afterEach(() => {
@@ -71,6 +77,7 @@ describe('WifiService', () => {
                 '802-11-wireless.mode', 'ap',
                 '802-11-wireless.band', 'bg',
                 'ipv4.method', 'shared',
+                'ipv4.addresses', '10.42.0.1/24',
                 'wifi-sec.key-mgmt', 'wpa-psk',
                 'wifi-sec.psk', 'supersecret'
             ],
@@ -112,7 +119,7 @@ describe('WifiService', () => {
         expect(logger.warn).toHaveBeenCalled();
     });
 
-    it('connect activates the requested network and cleans up the hotspot profile afterwards', async () => {
+    it('connect frees the radio by removing the hotspot profile, then activates the requested network', async () => {
         ConfigureNmcliRun({
             activeStdout: 'HomeNetwork:wlan0:wifi',
             deviceStdout: 'GENERAL.STATE:100 (connected)\nGENERAL.CONNECTION:HomeNetwork',
@@ -122,9 +129,9 @@ describe('WifiService', () => {
         const status = await service.connect({ ssid: 'HomeNetwork', password: 'housepass1' });
 
         const calledArgSets = nmcli.run.mock.calls.map((call) => call[0]);
-        expect(calledArgSets[0]).toEqual(['device', 'wifi', 'connect', 'HomeNetwork', 'password', 'housepass1', 'ifname', 'wlan0']);
-        expect(calledArgSets[1]).toEqual(['connection', 'down', 'cleveremote-hotspot']);
-        expect(calledArgSets[2]).toEqual(['connection', 'delete', 'cleveremote-hotspot']);
+        expect(calledArgSets[0]).toEqual(['connection', 'down', 'cleveremote-hotspot']);
+        expect(calledArgSets[1]).toEqual(['connection', 'delete', 'cleveremote-hotspot']);
+        expect(calledArgSets[2]).toEqual(['device', 'wifi', 'connect', 'HomeNetwork', 'password', 'housepass1', 'ifname', 'wlan0']);
         expect(status.mode).toBe('client');
         expect(status.connectionName).toBe('HomeNetwork');
         expect(status.ssid).toBe('HomeNetwork');
@@ -200,6 +207,37 @@ describe('WifiService', () => {
         expect(loggedArgs).not.toContain('supersecret');
     });
 
+    it('getLinkState distinguishes hotspot, client and transitional states', async () => {
+        ConfigureNmcliRun({ deviceStdout: 'GENERAL.STATE:100 (connected)\nGENERAL.CONNECTION:cleveremote-hotspot' });
+        await expect(service.getLinkState()).resolves.toBe('hotspot');
+        ConfigureNmcliRun({ deviceStdout: 'GENERAL.STATE:100 (connected)\nGENERAL.CONNECTION:HomeNetwork' });
+        await expect(service.getLinkState()).resolves.toBe('client');
+        ConfigureNmcliRun({ deviceStdout: 'GENERAL.STATE:70 (connecting (getting IP configuration))\nGENERAL.CONNECTION:HomeNetwork' });
+        await expect(service.getLinkState()).resolves.toBe('none');
+    });
+
+    it('getSavedWifiSsids lists saved client WiFi profiles, excluding the hotspot and other connection types', async () => {
+        nmcli.run.mockImplementation((args: string[]) => {
+            if (args.includes('NAME,TYPE')) {
+                return Promise.resolve({
+                    stdout: 'HomeNetwork:802-11-wireless\ncleveremote-hotspot:802-11-wireless\nWired connection 1:802-3-ethernet\nlo:loopback\n',
+                    stderr: ''
+                });
+            }
+            if (args.includes('802-11-wireless.ssid')) {
+                return Promise.resolve({ stdout: `802-11-wireless.ssid:${args[args.length - 1]}-ssid`, stderr: '' });
+            }
+            return Promise.resolve({ stdout: '', stderr: '' });
+        });
+        await expect(service.getSavedWifiSsids()).resolves.toEqual(['HomeNetwork-ssid']);
+    });
+
+    it('reconnectClient asks NetworkManager to connect the interface and ignores failures', async () => {
+        nmcli.run.mockRejectedValue(new NmcliError('failed', [], 3, '', 'Error: Timeout expired', true));
+        await expect(service.reconnectClient()).resolves.toBeUndefined();
+        expect(nmcli.run).toHaveBeenCalledWith(['-w', '10', 'device', 'connect', 'wlan0']);
+    });
+
     describe('background rescan', () => {
         beforeEach(() => {
             // @types/jest here predates the object-config overload; the installed @jest/fake-timers runtime supports it.
@@ -248,6 +286,53 @@ describe('WifiService', () => {
             await flushMicrotasks();
 
             expect(nmcli.run).not.toHaveBeenCalled();
+        });
+    });
+
+    describe('hotspot DNS config check at bootstrap', () => {
+        afterEach(() => {
+            service.onModuleDestroy();
+        });
+
+        it('stays silent when the dnsmasq config matches the hostname (case-insensitive) and interface', async () => {
+            service.onApplicationBootstrap();
+            await flushMicrotasks();
+
+            expect(readFile).toHaveBeenCalledWith(WIFI_HOTSPOT_DNSMASQ_CONF_PATH, 'utf8');
+            expect(logger.warn).not.toHaveBeenCalled();
+        });
+
+        it('warns without throwing when the dnsmasq config is missing', async () => {
+            readFile.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+
+            service.onApplicationBootstrap();
+            await flushMicrotasks();
+
+            expect(logger.warn).toHaveBeenCalledWith(
+                expect.objectContaining({ path: WIFI_HOTSPOT_DNSMASQ_CONF_PATH }),
+                expect.stringContaining('hotspot DNS config missing')
+            );
+        });
+
+        it('warns when the dnsmasq config targets another hostname', async () => {
+            readFile.mockResolvedValue('interface-name=pi-dev-1.local,wlan0/4\n');
+
+            service.onApplicationBootstrap();
+            await flushMicrotasks();
+
+            expect(logger.warn).toHaveBeenCalledWith(
+                expect.objectContaining({ expectedEntry: 'interface-name=zjzza6di.local,wlan0' }),
+                expect.stringContaining('does not match')
+            );
+        });
+
+        it('skips the check outside Linux', async () => {
+            jest.spyOn(os, 'platform').mockReturnValue('darwin');
+
+            service.onApplicationBootstrap();
+            await flushMicrotasks();
+
+            expect(readFile).not.toHaveBeenCalled();
         });
     });
 });

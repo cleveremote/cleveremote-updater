@@ -11,8 +11,12 @@
 #         ├── server.key             (clé privée du Pi)
 #         └── server.fullchain.crt   (cert Pi + intermediate)
 #
-# Le SAN ne contient que le hostname (DNS) — pas l'IP — pour rester
-# valide quel que soit le réseau local sur lequel le Pi est branché.
+# Usage : sudo ./gen-pi-cert.sh [box-host]   (défaut : hostname actuel)
+#
+# Le SAN contient le hostname (DNS) et uniquement l'IP fixe du hotspot de la
+# box (HOTSPOT_IP) : les IP des réseaux clients changent d'un réseau à l'autre,
+# celle du hotspot est fixée par l'app (WIFI_HOTSPOT_IPV4_CIDR dans
+# src/modules/wifi/wifi.constants.ts) et sert d'accès de secours par IP.
 
 set -euo pipefail
 
@@ -23,10 +27,14 @@ INTERMEDIATE_KEY="${CERT_DIR}/intermediate.key"
 DAYS_VALID=397
 
 # --- Hostname ---------------------------------------------------------------
-HOSTNAME_SHORT="$(hostname -s)"
+# En minuscules, comme le nom publié par Avahi (tools/provisioning/setup-box-network.sh)
+HOSTNAME_SHORT="$(echo "${1:-$(hostname -s)}" | tr '[:upper:]' '[:lower:]')"
 PI_NAME="${HOSTNAME_SHORT}.local"
+# Doit rester égale à WIFI_HOTSPOT_IPV4_CIDR (src/modules/wifi/wifi.constants.ts)
+HOTSPOT_IP="10.42.0.1"
 
 echo "Hostname    : ${PI_NAME}"
+echo "Hotspot IP  : ${HOTSPOT_IP}"
 echo "Script dir  : ${SCRIPT_DIR}"
 echo "Cert dir    : ${CERT_DIR}"
 
@@ -61,7 +69,7 @@ authorityKeyIdentifier=keyid,issuer
 basicConstraints=CA:FALSE
 keyUsage=digitalSignature,keyEncipherment
 extendedKeyUsage=serverAuth
-subjectAltName=DNS:${PI_NAME}
+subjectAltName=DNS:${PI_NAME},IP:${HOTSPOT_IP}
 EOF
 
 # --- Signature par l'Intermediate CA ---------------------------------------
