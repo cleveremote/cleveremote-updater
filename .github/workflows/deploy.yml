@@ -1,0 +1,101 @@
+name: Deploy
+
+# Le tag décide de l'environnement GitHub (qui porte les secrets AWS_S3_*) :
+#   vX.Y.Z-dev.N  → dev
+#   vX.Y.Z-rc.N   → test
+#   vX.Y.Z        → production
+#
+# dev / test : déclenchés par le push du tag.
+# prd        : déclenché par la publication d'une release (qui crée le tag).
+# Manuel     : Run workflow avec un tag existant (re-upload / rollback).
+#
+# Résultat : s3://cleveremote-bundles-.../clv-updater/<tag>/linux-arm64.tar.gz
+
+on:
+  push:
+    tags:
+      - 'v*.*.*-dev.*'
+      - 'v*.*.*-rc.*'
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag à builder et déposer sur S3 (ex. v0.1.0-dev.1, v0.1.0-rc.1, v0.1.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  # ─────────────────────────────────────────────
+  # JOB 1 — Tag → environnement cible
+  # ─────────────────────────────────────────────
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.resolve.outputs.skip }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      env: ${{ steps.resolve.outputs.env }}
+      gh_env: ${{ steps.resolve.outputs.gh_env }}
+
+    steps:
+      - name: Resolve tag & environment
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          case "$EVENT_NAME" in
+            workflow_dispatch) TAG="$INPUT_TAG" ;;
+            release)           TAG="$RELEASE_TAG" ;;
+            *)                 TAG="$REF_NAME" ;;
+          esac
+
+          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-dev\.[0-9]+$ ]]; then
+            ENV=dev;  GH_ENV=dev
+          elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]]; then
+            ENV=test; GH_ENV=test
+          elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            ENV=prd;  GH_ENV=production
+          else
+            echo "::error::Tag '$TAG' invalide. Formats attendus : vX.Y.Z-dev.N, vX.Y.Z-rc.N ou vX.Y.Z"
+            exit 1
+          fi
+
+          # Une release publiée sur un tag -dev/-rc est déjà traitée par le push du tag.
+          SKIP=false
+          if [[ "$EVENT_NAME" == "release" && "$ENV" != "prd" ]]; then
+            echo "::notice::Release $TAG non stable : bundle déjà déposé par le push du tag."
+            SKIP=true
+          fi
+
+          {
+            echo "skip=$SKIP"
+            echo "tag=$TAG"
+            echo "env=$ENV"
+            echo "gh_env=$GH_ENV"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "### $TAG → $ENV (bundle SEA → S3 clv-updater/$TAG/)" >> "$GITHUB_STEP_SUMMARY"
+
+  # ─────────────────────────────────────────────
+  # JOB 2 — Build SEA (exécutable autonome) & upload S3
+  # ─────────────────────────────────────────────
+  deploy-sea-s3:
+    name: Deploy SEA ${{ needs.resolve.outputs.tag }} → S3
+    needs: resolve
+    if: needs.resolve.outputs.skip != 'true'
+    uses: ./.github/workflows/deploy-sea-s3.yml
+    with:
+      version: ${{ needs.resolve.outputs.tag }}
+      environment: ${{ needs.resolve.outputs.gh_env }}
+      aws-region: eu-west-3
+      container-name: clv-updater
+    secrets: inherit

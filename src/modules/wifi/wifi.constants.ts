@@ -6,6 +6,14 @@ export const WIFI_DEFAULT_INTERFACE = 'wlan0';
 export const WIFI_DEFAULT_HOTSPOT_CON_NAME = 'cleveremote-hotspot';
 export const WIFI_DEFAULT_HOTSPOT_SSID = 'cleveremote-setup';
 
+// IP fixe de la box sur son hotspot (sinon NetworkManager la choisit lui-même dans 10.42.x.1).
+// Doit rester alignée avec le SAN "IP:" de tools/certs-generator/gen-pi-cert.sh.
+export const WIFI_HOTSPOT_IPV4_CIDR = '10.42.0.1/24';
+
+// Config dnsmasq du hotspot, déposée par tools/provisioning/setup-box-network.sh : répond <hostname>.local
+// en DNS unicast aux clients qui ne font pas de mDNS (Android, Windows en profil "Public").
+export const WIFI_HOTSPOT_DNSMASQ_CONF_PATH = '/etc/NetworkManager/dnsmasq-shared.d/cleveremote-box.conf';
+
 // Bouton physique de mode recovery manuel (numérotation BCM, câblé vers 3.3V avec pull-down)
 export const BOX_RECOVERY_BUTTON_BCM_PIN = 17;
 export const BOX_RECOVERY_BUTTON_HOLD_MS = 5000;

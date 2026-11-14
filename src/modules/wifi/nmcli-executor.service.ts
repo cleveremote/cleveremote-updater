@@ -1,7 +1,8 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as os from 'os';
-import { Injectable, NotImplementedException } from '@nestjs/common';
+import { HttpStatus, Injectable, NotImplementedException } from '@nestjs/common';
+import { ErrorCode, ErrorBody } from '../../common/errors/error-code';
 import { NmcliError } from './nmcli.error';
 import { NMCLI_BINARY, NMCLI_TIMEOUT_MS } from './wifi.constants';
 
@@ -42,7 +43,9 @@ export class NmcliExecutorService {
 
     private _assertLinux(): void {
         if (os.platform() !== 'linux') {
-            throw new NotImplementedException('nmcli execution is only supported on Linux');
+            throw new NotImplementedException(ErrorBody(
+                HttpStatus.NOT_IMPLEMENTED, ErrorCode.WIFI_UNSUPPORTED_PLATFORM, 'nmcli execution is only supported on Linux'
+            ));
         }
     }
 

@@ -1,14 +1,18 @@
+import * as fs from 'fs';
 import * as os from 'os';
 import { WifiService } from './wifi.service';
 import { NmcliExecutorService } from './nmcli-executor.service';
 import { NmcliError } from './nmcli.error';
-import { WIFI_BACKGROUND_RESCAN_INTERVAL_MS } from './wifi.constants';
+import { WIFI_BACKGROUND_RESCAN_INTERVAL_MS, WIFI_HOTSPOT_DNSMASQ_CONF_PATH } from './wifi.constants';
+
+const VALID_DNSMASQ_CONF = 'interface-name=zjzza6di.local,wlan0/4\nlocal=/local/\n';
 
 describe('WifiService', () => {
     let service: WifiService;
     let config: { get: jest.Mock };
     let nmcli: { run: jest.Mock };
     let logger: { error: jest.Mock; warn: jest.Mock };
+    let readFile: jest.SpyInstance;
 
     function ConfigureNmcliRun(
         overrides: { activeStdout?: string; deviceStdout?: string; wifiListStdout?: string; ssidStdout?: string } = {}
@@ -42,6 +46,8 @@ describe('WifiService', () => {
         logger = { error: jest.fn(), warn: jest.fn() };
         service = new WifiService(config as any, nmcli as unknown as NmcliExecutorService, logger as any);
         jest.spyOn(os, 'platform').mockReturnValue('linux');
+        jest.spyOn(os, 'hostname').mockReturnValue('ZJzzA6Di');
+        readFile = jest.spyOn(fs.promises, 'readFile').mockResolvedValue(VALID_DNSMASQ_CONF);
     });
 
     afterEach(() => {
@@ -71,6 +77,7 @@ describe('WifiService', () => {
                 '802-11-wireless.mode', 'ap',
                 '802-11-wireless.band', 'bg',
                 'ipv4.method', 'shared',
+                'ipv4.addresses', '10.42.0.1/24',
                 'wifi-sec.key-mgmt', 'wpa-psk',
                 'wifi-sec.psk', 'supersecret'
             ],
@@ -279,6 +286,53 @@ describe('WifiService', () => {
             await flushMicrotasks();
 
             expect(nmcli.run).not.toHaveBeenCalled();
+        });
+    });
+
+    describe('hotspot DNS config check at bootstrap', () => {
+        afterEach(() => {
+            service.onModuleDestroy();
+        });
+
+        it('stays silent when the dnsmasq config matches the hostname (case-insensitive) and interface', async () => {
+            service.onApplicationBootstrap();
+            await flushMicrotasks();
+
+            expect(readFile).toHaveBeenCalledWith(WIFI_HOTSPOT_DNSMASQ_CONF_PATH, 'utf8');
+            expect(logger.warn).not.toHaveBeenCalled();
+        });
+
+        it('warns without throwing when the dnsmasq config is missing', async () => {
+            readFile.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+
+            service.onApplicationBootstrap();
+            await flushMicrotasks();
+
+            expect(logger.warn).toHaveBeenCalledWith(
+                expect.objectContaining({ path: WIFI_HOTSPOT_DNSMASQ_CONF_PATH }),
+                expect.stringContaining('hotspot DNS config missing')
+            );
+        });
+
+        it('warns when the dnsmasq config targets another hostname', async () => {
+            readFile.mockResolvedValue('interface-name=pi-dev-1.local,wlan0/4\n');
+
+            service.onApplicationBootstrap();
+            await flushMicrotasks();
+
+            expect(logger.warn).toHaveBeenCalledWith(
+                expect.objectContaining({ expectedEntry: 'interface-name=zjzza6di.local,wlan0' }),
+                expect.stringContaining('does not match')
+            );
+        });
+
+        it('skips the check outside Linux', async () => {
+            jest.spyOn(os, 'platform').mockReturnValue('darwin');
+
+            service.onApplicationBootstrap();
+            await flushMicrotasks();
+
+            expect(readFile).not.toHaveBeenCalled();
         });
     });
 });

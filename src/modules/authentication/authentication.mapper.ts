@@ -9,6 +9,7 @@ export class AuthenticationMapper {
         model.email = authentication.email ?? null;
         model.password = authentication.password;
         model.role = authentication.role;
+        model.isConfigured = authentication.isConfigured ?? false;
         model.deletedAt = authentication.deletedAt;
         return model;
     }
@@ -20,6 +21,8 @@ export class AuthenticationMapper {
         authentication.email = model.email;
         authentication.password = model.password;
         authentication.role = model.role;
+        // undefined => champ ignore lors d'un update (un compte configure le reste)
+        authentication.isConfigured = model.isConfigured;
         authentication.deletedAt = model.deletedAt;
         return authentication;
     }

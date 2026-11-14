@@ -26,10 +26,14 @@ export class AuthenticationRepository {
         return AuthenticationMapper.mapToModel(saved);
     }
 
-    // Compte configuré = créé via /updater/configure (seul chemin qui pose un email, obligatoire dans ConfigureDto).
-    // Le compte technique créé au boot par initAuthentication() n'a pas d'email et n'est donc pas compté.
+    // Compte configuré = créé via /updater/configure (flag isConfigured). L'email (obligatoire avant que le setup
+    // ne le rende optionnel) reste accepté pour les box configurées avant l'ajout du flag.
+    // Le compte technique créé au boot par initAuthentication() n'a ni l'un ni l'autre et n'est donc pas compté.
     public async existsConfigured(): Promise<boolean> {
-        const found = await this._authenticationModel.exists({ email: { $ne: null }, deletedAt: null });
+        const found = await this._authenticationModel.exists({
+            deletedAt: null,
+            $or: [{ isConfigured: true }, { email: { $ne: null } }]
+        });
         return found !== null;
     }
 

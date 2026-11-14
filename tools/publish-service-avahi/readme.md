@@ -1,16 +1,17 @@
-sudo hostnamectl set-hostname zjzza6di
-sudo sed -i 's/127.0.1.1.*/127.0.1.1\tzjzza6di/' /etc/hosts
-sudo systemctl restart avahi-daemon
+# Publication Avahi / résolution du hostname
 
-sudo tee /etc/avahi/services/https.service >/dev/null <<'EOF'
-<?xml version="1.0" standalone='no'?>
-<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
-<service-group>
-  <name replace-wildcards="yes">%h</name>
-  <service>
-    <type>_https._tcp</type>
-    <port>443</port>
-  </service>
-</service-group>
-EOF
-sudo systemctl restart avahi-daemon
+Remplacé par le script idempotent `tools/provisioning/setup-box-network.sh` (à lancer en root, une fois par box) :
+
+```bash
+sudo tools/provisioning/setup-box-network.sh <box-host> [wifi-iface] [eth-iface]
+```
+
+Il configure :
+- le hostname (`hostnamectl` + `/etc/hosts`) ;
+- `/etc/avahi/avahi-daemon.conf` : `allow-interfaces=<wifi>,<eth>` (sinon la box disparaît du réseau local
+  quand le hotspot démarre, alors qu'elle y reste joignable par câble) ;
+- `/etc/avahi/services/https.service` : découverte `_https._tcp` sur 443 (Caddy), txt `id=<box-host>` ;
+- `/etc/NetworkManager/dnsmasq-shared.d/cleveremote-box.conf` : réponse DNS unicast `<box-host>.local`
+  aux clients du hotspot (Android, Windows), qui ne résolvent pas `.local` en mDNS.
+
+Si le hostname change, régénérer ensuite le certificat : `sudo tools/certs-generator/gen-pi-cert.sh <box-host>`.

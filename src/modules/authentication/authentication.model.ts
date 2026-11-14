@@ -6,5 +6,7 @@ export class AuthenticationModel {
     public email?: string | null;
     public password: string;
     public role: Role;
+    // true pour un compte créé via /updater/configure (setup), false pour le compte technique du boot
+    public isConfigured?: boolean;
     public deletedAt: Date | null;
 }

@@ -4,6 +4,7 @@ import { MicroserviceOptions } from '@nestjs/microservices';
 import { ValidationPipe } from '@nestjs/common';
 import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module';
+import { ValidationExceptionFactory } from './common/errors/validation-exception.factory';
 import { SocketIoClientProvider } from './common/websocket/socket-io-client.provider';
 import { SocketIoClientStrategy } from './common/websocket/socket-io-client.strategy';
 
@@ -22,7 +23,8 @@ async function bootstrap(): Promise<void> {
     const app = await NestFactory.create(AppModule, { cors: true, bufferLogs: true });
     app.useLogger(app.get(Logger));
     app.enableShutdownHooks([], { useProcessExit: true });
-    app.useGlobalPipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }));
+    const exceptionFactory = ValidationExceptionFactory;
+    app.useGlobalPipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true, exceptionFactory }));
     const logger = app.get(Logger);
     registerGlobalErrorHandlers(logger);
 
