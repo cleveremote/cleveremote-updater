@@ -45,6 +45,8 @@ export interface WifiStatus {
 export type WifiLinkState = 'hotspot' | 'client' | 'none';
 
 const NMCLI_WIFI_CONNECTION_TYPE = '802-11-wireless';
+const NMCLI_KEY_MGMT_WPA_PSK = 'wpa-psk';
+const NMCLI_KEY_MGMT_SAE = 'sae';
 // Doit rester sous NMCLI_TIMEOUT_MS : au-delà, nmcli rend la main mais NetworkManager poursuit l'activation
 const NMCLI_DEVICE_CONNECT_WAIT_S = '10';
 
@@ -97,12 +99,8 @@ export class WifiService implements OnApplicationBootstrap, OnModuleDestroy {
         const iface = this._interfaceName();
         await this._deleteHotspotProfile(this._hotspotConnectionName());
         try {
-            await this._waitForNetworkVisible(iface, dto.ssid);
-            await this._run(
-                ['-w', String(NMCLI_CONNECT_WAIT_S), 'device', 'wifi', 'connect', dto.ssid, 'password', dto.password, 'ifname', iface],
-                'connect to network',
-                NMCLI_CONNECT_TIMEOUT_MS
-            );
+            const network = await this._waitForNetworkVisible(iface, dto.ssid);
+            await this._activateClientProfile(iface, dto, network);
         } catch (err) {
             await this._restartHotspotAfterFailedConnect();
             throw err;
@@ -172,21 +170,56 @@ export class WifiService implements OnApplicationBootstrap, OnModuleDestroy {
         await this._runIgnoringFailure(['device', 'wifi', 'list', 'ifname', iface, '--rescan', 'yes']);
     }
 
-    // `nmcli device wifi connect` cherche le SSID dans la liste de scan de NetworkManager et échoue aussitôt
-    // ("No network with SSID ... found") s'il n'y est pas, ce qui arrive juste après l'arrêt du hotspot.
-    // On attend donc de le voir, en forçant un scan (sans risque ici : le hotspot est déjà coupé).
+    // Le profil client est créé explicitement (type de sécurité compris) puis activé, au lieu de
+    // `nmcli device wifi connect` : ce dernier réutilise un profil existant du même SSID et tente de le modifier,
+    // ce que NetworkManager refuse pour un profil généré par netplan
+    // ("802-11-wireless-security.key-mgmt: property is missing"), sans jamais essayer le mot de passe.
+    // Le profil porte le nom du SSID, comme ceux que créait `device wifi connect` : il remplace donc l'ancien.
+    private async _activateClientProfile(iface: string, dto: ConnectWifiDto, network: WifiNetwork | undefined): Promise<void> {
+        const conName = dto.ssid;
+        await this._runIgnoringFailure(['connection', 'delete', conName]);
+        await this._run(
+            [
+                'connection', 'add', 'type', 'wifi', 'ifname', iface, 'con-name', conName, 'ssid', dto.ssid,
+                'wifi-sec.key-mgmt', this._keyManagementFor(network),
+                'wifi-sec.psk', dto.password
+            ],
+            'connect to network: create profile'
+        );
+        try {
+            await this._run(
+                ['-w', String(NMCLI_CONNECT_WAIT_S), 'connection', 'up', conName, 'ifname', iface],
+                'connect to network',
+                NMCLI_CONNECT_TIMEOUT_MS
+            );
+        } catch (err) {
+            // Un profil au mot de passe refusé ne doit pas rester "réseau connu" (retry automatique du recovery)
+            await this._runIgnoringFailure(['connection', 'delete', conName]);
+            throw err;
+        }
+    }
+
+    // WPA3 seul => SAE ; WPA1/WPA2, mode mixte WPA2/WPA3 ou réseau absent du scan => WPA-PSK
+    private _keyManagementFor(network: WifiNetwork | undefined): string {
+        const security = network?.security ?? '';
+        return security.includes('WPA3') && !/WPA[12]/.test(security) ? NMCLI_KEY_MGMT_SAE : NMCLI_KEY_MGMT_WPA_PSK;
+    }
+
+    // Juste après l'arrêt du hotspot, le réseau visé peut ne pas encore figurer dans la liste de scan de
+    // NetworkManager : on attend de le voir, en forçant un scan (sans risque ici : le hotspot est déjà coupé).
     // Au mieux : s'il reste invisible, la connexion est tentée quand même et c'est nmcli qui donne l'erreur réelle.
-    private async _waitForNetworkVisible(iface: string, ssid: string): Promise<void> {
+    private async _waitForNetworkVisible(iface: string, ssid: string): Promise<WifiNetwork | undefined> {
         for (let attempt = 1; attempt <= WIFI_CONNECT_SCAN_ATTEMPTS; attempt += 1) {
-            const networks = await this._scanBeforeConnect(iface);
-            if (networks.some((network) => network.ssid === ssid)) {
-                return;
+            const network = (await this._scanBeforeConnect(iface)).find((candidate) => candidate.ssid === ssid);
+            if (network !== undefined) {
+                return network;
             }
             if (attempt < WIFI_CONNECT_SCAN_ATTEMPTS) {
                 await this._sleep(WIFI_CONNECT_SCAN_RETRY_MS);
             }
         }
         this._logger.warn({ ssid, attempts: WIFI_CONNECT_SCAN_ATTEMPTS }, 'connect: network not seen in scan results, trying anyway');
+        return undefined;
     }
 
     // Scan forcé ; s'il est refusé (scan déjà en cours, ou trop proche du précédent), on lit la liste en cache
