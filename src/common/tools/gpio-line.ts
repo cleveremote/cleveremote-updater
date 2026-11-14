@@ -1,19 +1,53 @@
-import { exec } from 'child_process';
-import { promisify } from 'util';
+import { readdir, readFile } from 'fs/promises';
 
-const execAsync = promisify(exec);
+const GPIO_SYSFS_ROOT = '/sys/class/gpio';
+const GPIO_DEBUGFS_PATH = '/sys/kernel/debug/gpio';
 
-// Le numéro sysfs peut différer du BCM (base du gpiochip non nulle sur les noyaux récents / Pi 5) :
-// on le lit dans /sys/kernel/debug/gpio (ligne "gpio-<sysfs> (GPIO<bcm> ...)"), repli sur le BCM sinon.
+// Contrôleur des broches du connecteur 40 points : Pi 0-3 (bcm2835), Pi 4 (bcm2711), Pi 5 (rp1)
+const HEADER_CHIP_LABEL = /^pinctrl-(bcm2835|bcm2711|rp1)$/;
+
+/**
+ * Convertit un numéro BCM en numéro sysfs (celui attendu par onoff / /sys/class/gpio/export).
+ * Les deux ne coïncident que si la base du gpiochip vaut 0 (Pi <= 4 sur anciens noyaux) : elle vaut
+ * 512 sur les noyaux >= 6.6 et ~570 sur le Pi 5, où exporter le numéro BCM brut échoue en EINVAL.
+ */
 export async function resolveGpioLine(bcmPin: number): Promise<number> {
+    return (await resolveFromSysfsChips(bcmPin)) ?? (await resolveFromDebugfs(bcmPin)) ?? bcmPin;
+}
+
+// Base du gpiochip du connecteur, lue dans sysfs : lisible sans root, contrairement à debugfs
+async function resolveFromSysfsChips(bcmPin: number): Promise<number | undefined> {
     try {
-        const { stdout } = await execAsync(`grep -iw 'gpio${bcmPin}' /sys/kernel/debug/gpio`);
-        const match = /gpio-(\d+)/.exec(stdout);
+        for (const entry of await readdir(GPIO_SYSFS_ROOT)) {
+            if (!entry.startsWith('gpiochip')) {
+                continue;
+            }
+            const chipPath = `${GPIO_SYSFS_ROOT}/${entry}`;
+            const label = (await readFile(`${chipPath}/label`, 'utf8')).trim();
+            if (!HEADER_CHIP_LABEL.test(label)) {
+                continue;
+            }
+            const base = Number((await readFile(`${chipPath}/base`, 'utf8')).trim());
+            const ngpio = Number((await readFile(`${chipPath}/ngpio`, 'utf8')).trim());
+            if (Number.isInteger(base) && bcmPin < ngpio) {
+                return base + bcmPin;
+            }
+        }
+    } catch {
+        // sysfs GPIO absent ou illisible : on tente debugfs
+    }
+    return undefined;
+}
+
+// Second recours pour une carte au label inconnu : ligne "gpio-<sysfs> (GPIO<bcm> ...)" de debugfs (root)
+async function resolveFromDebugfs(bcmPin: number): Promise<number | undefined> {
+    try {
+        const match = new RegExp(`gpio-(\\d+)\\s*\\(GPIO${bcmPin}\\b`, 'i').exec(await readFile(GPIO_DEBUGFS_PATH, 'utf8'));
         if (match) {
             return Number(match[1]);
         }
     } catch {
-        // debugfs inaccessible (droits) ou broche absente : repli sur le numéro BCM
+        // debugfs inaccessible (droits) : repli sur le numéro BCM
     }
-    return bcmPin;
+    return undefined;
 }
