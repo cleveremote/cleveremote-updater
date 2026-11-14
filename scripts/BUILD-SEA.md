@@ -57,9 +57,10 @@ existe) **à côté de l'exécutable**, quel que soit le répertoire courant
 (`src/app.module.ts`). Les variables d'environnement déjà définies (systemd,
 shell…) restent prioritaires sur ces fichiers.
 
-> Le `.env` copié dans la release contient les secrets de la machine de build
-> (`INITIAL_PASSWORD`, `WIFI_HOTSPOT_PASSWORD`…). Le remplacer sur la cible ou
-> le retirer avant de diffuser l'archive.
+> Le `.env` est **versionné** : c'est celui du dépôt qui est copié dans la
+> release, y compris en CI (archive déposée sur S3 par `deploy-sea-s3.yml`).
+> Ne pas y mettre de secret propre à une machine : les surcharges locales vont
+> dans `.env.local` (non versionné), à déposer à côté de l'exécutable sur la cible.
 
 ## GPIO (LED de statut, bouton recovery)
 

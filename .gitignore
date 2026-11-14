@@ -38,9 +38,6 @@ junit.xml
 !.vscode/launch.json
 !.vscode/extensions.json
 
-# Environment
-.env
-
 # Credentials (never commit service-account keys)
 *firebase-adminsdk*.json
 *serviceAccountKey*.json
@@ -48,5 +45,5 @@ junit.xml
 # private keys
 *.key
 
-# Secrets locaux
+# Secrets locaux (.env est versionné : il est embarqué dans la release SEA déposée sur S3)
 .env.local

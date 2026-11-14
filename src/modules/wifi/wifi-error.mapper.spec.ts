@@ -24,6 +24,13 @@ describe('WifiErrorMapper', () => {
         expect(WifiErrorMapper.toHttpException(err, 'ctx')).toBeInstanceOf(RequestTimeoutException);
     });
 
+    it('maps an expired nmcli wait (-w) to a RequestTimeoutException', () => {
+        const err = BuildError('failed', 'Error: Timeout 60 sec expired.');
+        const exception = WifiErrorMapper.toHttpException(err, 'ctx');
+        expect(exception).toBeInstanceOf(RequestTimeoutException);
+        expect(GetErrorCode(exception)).toBe(ErrorCode.WIFI_TIMEOUT);
+    });
+
     it('maps an authentication failure to a BadRequestException', () => {
         const err = BuildError('failed', 'Error: Secrets were required, but not provided.');
         expect(WifiErrorMapper.toHttpException(err, 'ctx')).toBeInstanceOf(BadRequestException);
