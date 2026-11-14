@@ -3,7 +3,7 @@ import * as os from 'os';
 import { WifiService } from './wifi.service';
 import { NmcliExecutorService } from './nmcli-executor.service';
 import { NmcliError } from './nmcli.error';
-import { NotFoundException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import {
     NMCLI_CONNECT_TIMEOUT_MS,
     NMCLI_CONNECT_WAIT_S,
@@ -16,7 +16,13 @@ import {
 const VALID_DNSMASQ_CONF = 'interface-name=zjzza6di.local,wlan0/4\nlocal=/local/\n';
 const WIFI_LIST_RESCAN_ARGS = ['-t', '-f', 'SSID,SIGNAL,SECURITY', 'device', 'wifi', 'list', 'ifname', 'wlan0', '--rescan', 'yes'];
 const WIFI_LIST_CACHED_ARGS = ['-t', '-f', 'SSID,SIGNAL,SECURITY', 'device', 'wifi', 'list', 'ifname', 'wlan0', '--rescan', 'no'];
-const CONNECT_ARGS = ['-w', String(NMCLI_CONNECT_WAIT_S), 'device', 'wifi', 'connect', 'HomeNetwork', 'password', 'housepass1', 'ifname', 'wlan0'];
+const DELETE_CLIENT_PROFILE_ARGS = ['connection', 'delete', 'HomeNetwork'];
+const ADD_CLIENT_PROFILE_ARGS = [
+    'connection', 'add', 'type', 'wifi', 'ifname', 'wlan0', 'con-name', 'HomeNetwork', 'ssid', 'HomeNetwork',
+    'wifi-sec.key-mgmt', 'wpa-psk',
+    'wifi-sec.psk', 'housepass1'
+];
+const CONNECT_ARGS = ['-w', String(NMCLI_CONNECT_WAIT_S), 'connection', 'up', 'HomeNetwork', 'ifname', 'wlan0'];
 
 describe('WifiService', () => {
     let service: WifiService;
@@ -130,7 +136,7 @@ describe('WifiService', () => {
         expect(logger.warn).toHaveBeenCalled();
     });
 
-    it('connect frees the radio, rescans until the network is visible, then activates it with the long timeout', async () => {
+    it('connect frees the radio, rescans until the network is visible, then creates its profile and activates it with the long timeout', async () => {
         ConfigureNmcliRun({
             activeStdout: 'HomeNetwork:wlan0:wifi',
             deviceStdout: 'GENERAL.STATE:100 (connected)\nGENERAL.CONNECTION:HomeNetwork',
@@ -144,10 +150,53 @@ describe('WifiService', () => {
         expect(calledArgSets[0]).toEqual(['connection', 'down', 'cleveremote-hotspot']);
         expect(calledArgSets[1]).toEqual(['connection', 'delete', 'cleveremote-hotspot']);
         expect(calledArgSets[2]).toEqual(WIFI_LIST_RESCAN_ARGS);
-        expect(nmcli.run.mock.calls[3]).toEqual([CONNECT_ARGS, NMCLI_CONNECT_TIMEOUT_MS]);
+        expect(calledArgSets[3]).toEqual(DELETE_CLIENT_PROFILE_ARGS);
+        expect(calledArgSets[4]).toEqual(ADD_CLIENT_PROFILE_ARGS);
+        expect(nmcli.run.mock.calls[5]).toEqual([CONNECT_ARGS, NMCLI_CONNECT_TIMEOUT_MS]);
         expect(status.mode).toBe('client');
         expect(status.connectionName).toBe('HomeNetwork');
         expect(status.ssid).toBe('HomeNetwork');
+    });
+
+    // `nmcli device wifi connect` modifie un profil existant du même SSID, ce que NetworkManager refuse pour un
+    // profil netplan ("key-mgmt: property is missing") : la connexion ne doit jamais repasser par cette commande
+    it('connect never relies on `nmcli device wifi connect`', async () => {
+        ConfigureNmcliRun({ wifiListStdout: 'HomeNetwork:80:WPA2\n' });
+
+        await service.connect({ ssid: 'HomeNetwork', password: 'housepass1' });
+
+        const hasDeviceWifiConnect = nmcli.run.mock.calls.some((call) => call[0].includes('device') && call[0].includes('connect'));
+        expect(hasDeviceWifiConnect).toBe(false);
+    });
+
+    it.each([
+        ['WPA2', 'wpa-psk'],
+        ['WPA1 WPA2', 'wpa-psk'],
+        ['WPA2 WPA3', 'wpa-psk'],
+        ['WPA3', 'sae']
+    ])('connect creates the profile with the key management matching a %s network (%s)', async (security, keyMgmt) => {
+        ConfigureNmcliRun({ wifiListStdout: `HomeNetwork:80:${security}\n` });
+
+        await service.connect({ ssid: 'HomeNetwork', password: 'housepass1' });
+
+        const addArgs = nmcli.run.mock.calls.map((call) => call[0]).find((args) => args[1] === 'add');
+        expect(addArgs[addArgs.indexOf('wifi-sec.key-mgmt') + 1]).toBe(keyMgmt);
+    });
+
+    it('connect redacts the WiFi password when the profile creation fails', async () => {
+        config.get.mockImplementation((key: string) => (key === 'WIFI_HOTSPOT_PASSWORD' ? 'supersecret' : undefined));
+        nmcli.run.mockImplementation((args: string[]) => {
+            if (args[1] === 'add' && args.includes('HomeNetwork')) {
+                return Promise.reject(new NmcliError('failed', args, 1, '', 'Error: 802-11-wireless-security.psk: property is invalid.', false));
+            }
+            return Promise.resolve({ stdout: args.includes('list') ? 'HomeNetwork:80:WPA2\n' : '', stderr: '' });
+        });
+
+        await expect(service.connect({ ssid: 'HomeNetwork', password: 'housepass1' })).rejects.toBeInstanceOf(BadRequestException);
+
+        const loggedArgs = logger.error.mock.calls[0][0].args;
+        expect(loggedArgs).toContain('***');
+        expect(loggedArgs).not.toContain('housepass1');
     });
 
     describe('connect: waiting for the network to show up in the scan results', () => {
@@ -198,11 +247,12 @@ describe('WifiService', () => {
             expect(CountCalls(CONNECT_ARGS)).toBe(1);
         });
 
-        it('still attempts the connection when the network never shows up, then restarts the hotspot on failure', async () => {
+        it('still attempts the connection when the network never shows up, then drops the profile and restarts the hotspot on failure', async () => {
             config.get.mockImplementation((key: string) => (key === 'WIFI_HOTSPOT_PASSWORD' ? 'supersecret' : undefined));
             nmcli.run.mockImplementation((args: string[]) => {
-                if (args.includes('connect')) {
-                    return Promise.reject(new NmcliError('failed', args, 10, '', 'Error: No network with SSID \'HomeNetwork\' found.', false));
+                if (JSON.stringify(args) === JSON.stringify(CONNECT_ARGS)) {
+                    const stderr = 'Error: Connection activation failed: The Wi-Fi network could not be found';
+                    return Promise.reject(new NmcliError('failed', args, 4, '', stderr, false));
                 }
                 return Promise.resolve({ stdout: '', stderr: '' });
             });
@@ -211,7 +261,10 @@ describe('WifiService', () => {
 
             expect(CountCalls(WIFI_LIST_RESCAN_ARGS)).toBe(WIFI_CONNECT_SCAN_ATTEMPTS);
             expect(sleep).toHaveBeenCalledTimes(WIFI_CONNECT_SCAN_ATTEMPTS - 1);
+            expect(CountCalls(ADD_CLIENT_PROFILE_ARGS)).toBe(1);
             expect(CountCalls(CONNECT_ARGS)).toBe(1);
+            // avant la création du profil, puis après l'échec de son activation
+            expect(CountCalls(DELETE_CLIENT_PROFILE_ARGS)).toBe(2);
             expect(CountCalls(['connection', 'up', 'cleveremote-hotspot'])).toBe(1);
         });
     });

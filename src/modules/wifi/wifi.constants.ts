@@ -2,14 +2,14 @@ export const NMCLI_BINARY = 'nmcli';
 export const NMCLI_TIMEOUT_MS = 15000;
 export const WIFI_BACKGROUND_RESCAN_INTERVAL_MS = 5 * 60 * 1000;
 
-// Connexion à un réseau client (`nmcli device wifi connect`) : association + DHCP dépassent couramment 10 s.
+// Connexion à un réseau client (`nmcli connection up`) : association + DHCP dépassent couramment 10 s.
 // nmcli attend lui-même jusqu'à NMCLI_CONNECT_WAIT_S (-w) et rend alors sa propre erreur ; le kill du process
 // reste au-dessus pour ne jamais couper une activation que NetworkManager est encore en train de mener.
 export const NMCLI_CONNECT_WAIT_S = 60;
 export const NMCLI_CONNECT_TIMEOUT_MS = 70 * 1000;
 
 // Juste après l'arrêt du hotspot, la liste de scan de NetworkManager peut ne pas (encore) contenir le réseau
-// visé, or `nmcli device wifi connect` échoue aussitôt s'il n'y figure pas : on rescanne avant de se connecter.
+// visé, or son type de sécurité y est lu et l'activation échoue s'il reste introuvable : on rescanne avant de se connecter.
 export const WIFI_CONNECT_SCAN_ATTEMPTS = 4;
 export const WIFI_CONNECT_SCAN_RETRY_MS = 2000;
 

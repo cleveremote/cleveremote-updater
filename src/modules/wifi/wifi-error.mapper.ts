@@ -28,13 +28,16 @@ const _errorMatchers: ErrorMatcher[] = [
         build: () => new RequestTimeoutException(ErrorBody(HttpStatus.REQUEST_TIMEOUT, ErrorCode.WIFI_TIMEOUT, 'nmcli command timed out'))
     },
     {
-        test: (err) => /secrets were required|802-11-wireless-security|no secrets provided/i.test(err.stderr),
+        // Limité à la propriété `psk` : une autre propriété de sécurité refusée (ex. "key-mgmt: property is missing")
+        // est un défaut de profil, pas un mot de passe incorrect
+        test: (err) => /secrets were required|802-11-wireless-security\.psk|no secrets provided/i.test(err.stderr),
         build: () => new BadRequestException(ErrorBody(
             HttpStatus.BAD_REQUEST, ErrorCode.WIFI_INVALID_PSK, 'Incorrect WiFi password or authentication failed'
         ))
     },
     {
-        test: (err) => /no network with ssid/i.test(err.stderr),
+        // "No network with SSID" : `device wifi connect` ; "Wi-Fi network could not be found" : `connection up`
+        test: (err) => /no network with ssid|wi-fi network could not be found/i.test(err.stderr),
         build: () => new NotFoundException(ErrorBody(HttpStatus.NOT_FOUND, ErrorCode.WIFI_NETWORK_NOT_FOUND, 'WiFi network was not found'))
     },
     {

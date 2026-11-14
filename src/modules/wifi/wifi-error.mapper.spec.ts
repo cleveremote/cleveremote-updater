@@ -36,6 +36,22 @@ describe('WifiErrorMapper', () => {
         expect(WifiErrorMapper.toHttpException(err, 'ctx')).toBeInstanceOf(BadRequestException);
     });
 
+    it('maps a rejected psk property to WIFI_INVALID_PSK', () => {
+        const err = BuildError('failed', 'Error: 802-11-wireless-security.psk: property is invalid.');
+        expect(GetErrorCode(WifiErrorMapper.toHttpException(err, 'ctx'))).toBe(ErrorCode.WIFI_INVALID_PSK);
+    });
+
+    // Profil refusé par NetworkManager avant tout essai du mot de passe : ne doit pas être présenté comme un mauvais mot de passe
+    it('does not report a missing key-mgmt property as an incorrect WiFi password', () => {
+        const err = BuildError('failed', 'Error: 802-11-wireless-security.key-mgmt: property is missing.');
+        expect(GetErrorCode(WifiErrorMapper.toHttpException(err, 'ctx'))).toBe(ErrorCode.WIFI_OPERATION_FAILED);
+    });
+
+    it('maps a network not found during activation (`connection up`) to WIFI_NETWORK_NOT_FOUND', () => {
+        const err = BuildError('failed', 'Error: Connection activation failed: The Wi-Fi network could not be found');
+        expect(GetErrorCode(WifiErrorMapper.toHttpException(err, 'ctx'))).toBe(ErrorCode.WIFI_NETWORK_NOT_FOUND);
+    });
+
     it('maps a missing SSID to a NotFoundException', () => {
         const err = BuildError('failed', 'Error: No network with SSID \'foo\' found.');
         expect(WifiErrorMapper.toHttpException(err, 'ctx')).toBeInstanceOf(NotFoundException);
