@@ -23,7 +23,8 @@ const _errorMatchers: ErrorMatcher[] = [
         ))
     },
     {
-        test: (err) => err.didTimeOut,
+        // Process tué par notre timeout, ou délai `-w` de nmcli écoulé ("Error: Timeout 60 sec expired.")
+        test: (err) => err.didTimeOut || /timeout \d+ sec expired/i.test(err.stderr),
         build: () => new RequestTimeoutException(ErrorBody(HttpStatus.REQUEST_TIMEOUT, ErrorCode.WIFI_TIMEOUT, 'nmcli command timed out'))
     },
     {

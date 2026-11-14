@@ -1,6 +1,7 @@
 import * as os from 'os';
 import { NmcliExecutorService, nmcliShell } from './nmcli-executor.service';
 import { NmcliError } from './nmcli.error';
+import { NMCLI_TIMEOUT_MS } from './wifi.constants';
 
 describe('NmcliExecutorService', () => {
     let service: NmcliExecutorService;
@@ -22,6 +23,16 @@ describe('NmcliExecutorService', () => {
 
         expect(spy).toHaveBeenCalledWith('nmcli', args, expect.objectContaining({ timeout: expect.any(Number) }));
         expect(result).toEqual({ stdout: 'ok', stderr: '' });
+    });
+
+    it('uses the default timeout unless a per-command timeout is given', async () => {
+        const spy = jest.spyOn(nmcliShell, 'execFileAsync').mockResolvedValue({ stdout: '', stderr: '' });
+
+        await service.run(['connection', 'show']);
+        await service.run(['device', 'wifi', 'connect', 'HomeNetwork'], 70000);
+
+        expect(spy.mock.calls[0][2].timeout).toBe(NMCLI_TIMEOUT_MS);
+        expect(spy.mock.calls[1][2].timeout).toBe(70000);
     });
 
     it('never invokes execFile with a joined/interpolated command string', async () => {

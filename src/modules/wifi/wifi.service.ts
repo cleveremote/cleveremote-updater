@@ -18,7 +18,11 @@ import { ErrorCode, ErrorBody } from '../../common/errors/error-code';
 import { ConnectWifiDto } from './dto/connect-wifi.dto';
 import { StartHotspotDto } from './dto/start-hotspot.dto';
 import {
+    NMCLI_CONNECT_TIMEOUT_MS,
+    NMCLI_CONNECT_WAIT_S,
     WIFI_BACKGROUND_RESCAN_INTERVAL_MS,
+    WIFI_CONNECT_SCAN_ATTEMPTS,
+    WIFI_CONNECT_SCAN_RETRY_MS,
     WIFI_DEFAULT_HOTSPOT_CON_NAME,
     WIFI_DEFAULT_HOTSPOT_SSID,
     WIFI_DEFAULT_INTERFACE,
@@ -93,7 +97,12 @@ export class WifiService implements OnApplicationBootstrap, OnModuleDestroy {
         const iface = this._interfaceName();
         await this._deleteHotspotProfile(this._hotspotConnectionName());
         try {
-            await this._run(['device', 'wifi', 'connect', dto.ssid, 'password', dto.password, 'ifname', iface], 'connect to network');
+            await this._waitForNetworkVisible(iface, dto.ssid);
+            await this._run(
+                ['-w', String(NMCLI_CONNECT_WAIT_S), 'device', 'wifi', 'connect', dto.ssid, 'password', dto.password, 'ifname', iface],
+                'connect to network',
+                NMCLI_CONNECT_TIMEOUT_MS
+            );
         } catch (err) {
             await this._restartHotspotAfterFailedConnect();
             throw err;
@@ -119,10 +128,7 @@ export class WifiService implements OnApplicationBootstrap, OnModuleDestroy {
         const iface = this._interfaceName();
         // --rescan no: a forced rescan briefly interrupts AP beaconing on this single radio,
         // dropping clients connected to our own hotspot mid-request. Return the cached list instead.
-        const result = await this._run(
-            ['-t', '-f', 'SSID,SIGNAL,SECURITY', 'device', 'wifi', 'list', 'ifname', iface, '--rescan', 'no'],
-            'scan networks'
-        );
+        const result = await this._run(this._wifiListArgs(iface, 'no'), 'scan networks');
         return NmcliOutputParser.parseWifiList(result.stdout);
     }
 
@@ -164,6 +170,45 @@ export class WifiService implements OnApplicationBootstrap, OnModuleDestroy {
     private async _backgroundRescan(): Promise<void> {
         const iface = this._interfaceName();
         await this._runIgnoringFailure(['device', 'wifi', 'list', 'ifname', iface, '--rescan', 'yes']);
+    }
+
+    // `nmcli device wifi connect` cherche le SSID dans la liste de scan de NetworkManager et échoue aussitôt
+    // ("No network with SSID ... found") s'il n'y est pas, ce qui arrive juste après l'arrêt du hotspot.
+    // On attend donc de le voir, en forçant un scan (sans risque ici : le hotspot est déjà coupé).
+    // Au mieux : s'il reste invisible, la connexion est tentée quand même et c'est nmcli qui donne l'erreur réelle.
+    private async _waitForNetworkVisible(iface: string, ssid: string): Promise<void> {
+        for (let attempt = 1; attempt <= WIFI_CONNECT_SCAN_ATTEMPTS; attempt += 1) {
+            const networks = await this._scanBeforeConnect(iface);
+            if (networks.some((network) => network.ssid === ssid)) {
+                return;
+            }
+            if (attempt < WIFI_CONNECT_SCAN_ATTEMPTS) {
+                await this._sleep(WIFI_CONNECT_SCAN_RETRY_MS);
+            }
+        }
+        this._logger.warn({ ssid, attempts: WIFI_CONNECT_SCAN_ATTEMPTS }, 'connect: network not seen in scan results, trying anyway');
+    }
+
+    // Scan forcé ; s'il est refusé (scan déjà en cours, ou trop proche du précédent), on lit la liste en cache
+    private async _scanBeforeConnect(iface: string): Promise<WifiNetwork[]> {
+        return await this._tryListNetworks(iface, 'yes') ?? await this._tryListNetworks(iface, 'no') ?? [];
+    }
+
+    private async _tryListNetworks(iface: string, rescan: 'yes' | 'no'): Promise<WifiNetwork[] | null> {
+        try {
+            const result = await this._nmcli.run(this._wifiListArgs(iface, rescan));
+            return NmcliOutputParser.parseWifiList(result.stdout);
+        } catch (err) {
+            if (err instanceof NmcliError) {
+                this._logger.warn({ rescan, stderr: err.stderr }, 'connect: failed to list networks, ignoring');
+                return null;
+            }
+            throw err;
+        }
+    }
+
+    private _wifiListArgs(iface: string, rescan: 'yes' | 'no'): string[] {
+        return ['-t', '-f', 'SSID,SIGNAL,SECURITY', 'device', 'wifi', 'list', 'ifname', iface, '--rescan', rescan];
     }
 
     private async _createHotspotProfile(conName: string, iface: string, ssid: string, password: string): Promise<void> {
@@ -279,9 +324,9 @@ export class WifiService implements OnApplicationBootstrap, OnModuleDestroy {
         }
     }
 
-    private async _run(args: string[], context: string): Promise<NmcliResult> {
+    private async _run(args: string[], context: string, timeoutMs?: number): Promise<NmcliResult> {
         try {
-            return await this._nmcli.run(args);
+            return await (timeoutMs === undefined ? this._nmcli.run(args) : this._nmcli.run(args, timeoutMs));
         } catch (err) {
             if (err instanceof NmcliError) {
                 this._logger.error({ args: this._redactArgs(args), stderr: err.stderr }, `nmcli command failed: ${context}`);
@@ -307,4 +352,6 @@ export class WifiService implements OnApplicationBootstrap, OnModuleDestroy {
         const secretKeys = new Set(['wifi-sec.psk', 'password']);
         return args.map((arg, index) => (index > 0 && secretKeys.has(args[index - 1]) ? '***' : arg));
     }
+
+    private readonly _sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 }

@@ -28,11 +28,11 @@ export const nmcliShell: { execFileAsync: ExecFileAsync } = {
 
 @Injectable()
 export class NmcliExecutorService {
-    public async run(args: string[]): Promise<NmcliResult> {
+    public async run(args: string[], timeoutMs: number = NMCLI_TIMEOUT_MS): Promise<NmcliResult> {
         this._assertLinux();
         try {
             const { stdout, stderr } = await nmcliShell.execFileAsync(NMCLI_BINARY, args, {
-                timeout: NMCLI_TIMEOUT_MS,
+                timeout: timeoutMs,
                 killSignal: 'SIGTERM'
             });
             return { stdout, stderr };

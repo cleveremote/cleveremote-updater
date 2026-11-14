@@ -3,9 +3,20 @@ import * as os from 'os';
 import { WifiService } from './wifi.service';
 import { NmcliExecutorService } from './nmcli-executor.service';
 import { NmcliError } from './nmcli.error';
-import { WIFI_BACKGROUND_RESCAN_INTERVAL_MS, WIFI_HOTSPOT_DNSMASQ_CONF_PATH } from './wifi.constants';
+import { NotFoundException } from '@nestjs/common';
+import {
+    NMCLI_CONNECT_TIMEOUT_MS,
+    NMCLI_CONNECT_WAIT_S,
+    WIFI_BACKGROUND_RESCAN_INTERVAL_MS,
+    WIFI_CONNECT_SCAN_ATTEMPTS,
+    WIFI_CONNECT_SCAN_RETRY_MS,
+    WIFI_HOTSPOT_DNSMASQ_CONF_PATH
+} from './wifi.constants';
 
 const VALID_DNSMASQ_CONF = 'interface-name=zjzza6di.local,wlan0/4\nlocal=/local/\n';
+const WIFI_LIST_RESCAN_ARGS = ['-t', '-f', 'SSID,SIGNAL,SECURITY', 'device', 'wifi', 'list', 'ifname', 'wlan0', '--rescan', 'yes'];
+const WIFI_LIST_CACHED_ARGS = ['-t', '-f', 'SSID,SIGNAL,SECURITY', 'device', 'wifi', 'list', 'ifname', 'wlan0', '--rescan', 'no'];
+const CONNECT_ARGS = ['-w', String(NMCLI_CONNECT_WAIT_S), 'device', 'wifi', 'connect', 'HomeNetwork', 'password', 'housepass1', 'ifname', 'wlan0'];
 
 describe('WifiService', () => {
     let service: WifiService;
@@ -119,11 +130,12 @@ describe('WifiService', () => {
         expect(logger.warn).toHaveBeenCalled();
     });
 
-    it('connect frees the radio by removing the hotspot profile, then activates the requested network', async () => {
+    it('connect frees the radio, rescans until the network is visible, then activates it with the long timeout', async () => {
         ConfigureNmcliRun({
             activeStdout: 'HomeNetwork:wlan0:wifi',
             deviceStdout: 'GENERAL.STATE:100 (connected)\nGENERAL.CONNECTION:HomeNetwork',
-            ssidStdout: '802-11-wireless.ssid:HomeNetwork'
+            ssidStdout: '802-11-wireless.ssid:HomeNetwork',
+            wifiListStdout: 'HomeNetwork:80:WPA2\n'
         });
 
         const status = await service.connect({ ssid: 'HomeNetwork', password: 'housepass1' });
@@ -131,10 +143,77 @@ describe('WifiService', () => {
         const calledArgSets = nmcli.run.mock.calls.map((call) => call[0]);
         expect(calledArgSets[0]).toEqual(['connection', 'down', 'cleveremote-hotspot']);
         expect(calledArgSets[1]).toEqual(['connection', 'delete', 'cleveremote-hotspot']);
-        expect(calledArgSets[2]).toEqual(['device', 'wifi', 'connect', 'HomeNetwork', 'password', 'housepass1', 'ifname', 'wlan0']);
+        expect(calledArgSets[2]).toEqual(WIFI_LIST_RESCAN_ARGS);
+        expect(nmcli.run.mock.calls[3]).toEqual([CONNECT_ARGS, NMCLI_CONNECT_TIMEOUT_MS]);
         expect(status.mode).toBe('client');
         expect(status.connectionName).toBe('HomeNetwork');
         expect(status.ssid).toBe('HomeNetwork');
+    });
+
+    describe('connect: waiting for the network to show up in the scan results', () => {
+        let sleep: jest.SpyInstance;
+
+        function CountCalls(args: string[]): number {
+            return nmcli.run.mock.calls.filter((call) => JSON.stringify(call[0]) === JSON.stringify(args)).length;
+        }
+
+        beforeEach(() => {
+            sleep = jest.spyOn(service as any, '_sleep').mockResolvedValue(undefined);
+        });
+
+        it('rescans again when the network is missing from the first scan (hotspot just stopped)', async () => {
+            let scanCount = 0;
+            nmcli.run.mockImplementation((args: string[]) => {
+                if (args.includes('list')) {
+                    scanCount += 1;
+                    return Promise.resolve({ stdout: scanCount === 1 ? 'Neighbour:40:WPA2\n' : 'HomeNetwork:80:WPA2\n', stderr: '' });
+                }
+                return Promise.resolve({ stdout: '', stderr: '' });
+            });
+
+            await service.connect({ ssid: 'HomeNetwork', password: 'housepass1' });
+
+            expect(CountCalls(WIFI_LIST_RESCAN_ARGS)).toBe(2);
+            expect(sleep).toHaveBeenCalledTimes(1);
+            expect(sleep).toHaveBeenCalledWith(WIFI_CONNECT_SCAN_RETRY_MS);
+            expect(CountCalls(CONNECT_ARGS)).toBe(1);
+        });
+
+        it('falls back to the cached list when the forced rescan is refused', async () => {
+            nmcli.run.mockImplementation((args: string[]) => {
+                if (args.includes('list') && args.includes('yes')) {
+                    const stderr = 'Error: Scanning not allowed immediately following previous scan.';
+                    return Promise.reject(new NmcliError('failed', args, 1, '', stderr, false));
+                }
+                if (args.includes('list')) {
+                    return Promise.resolve({ stdout: 'HomeNetwork:80:WPA2\n', stderr: '' });
+                }
+                return Promise.resolve({ stdout: '', stderr: '' });
+            });
+
+            await service.connect({ ssid: 'HomeNetwork', password: 'housepass1' });
+
+            expect(CountCalls(WIFI_LIST_CACHED_ARGS)).toBe(1);
+            expect(sleep).not.toHaveBeenCalled();
+            expect(CountCalls(CONNECT_ARGS)).toBe(1);
+        });
+
+        it('still attempts the connection when the network never shows up, then restarts the hotspot on failure', async () => {
+            config.get.mockImplementation((key: string) => (key === 'WIFI_HOTSPOT_PASSWORD' ? 'supersecret' : undefined));
+            nmcli.run.mockImplementation((args: string[]) => {
+                if (args.includes('connect')) {
+                    return Promise.reject(new NmcliError('failed', args, 10, '', 'Error: No network with SSID \'HomeNetwork\' found.', false));
+                }
+                return Promise.resolve({ stdout: '', stderr: '' });
+            });
+
+            await expect(service.connect({ ssid: 'HomeNetwork', password: 'housepass1' })).rejects.toBeInstanceOf(NotFoundException);
+
+            expect(CountCalls(WIFI_LIST_RESCAN_ARGS)).toBe(WIFI_CONNECT_SCAN_ATTEMPTS);
+            expect(sleep).toHaveBeenCalledTimes(WIFI_CONNECT_SCAN_ATTEMPTS - 1);
+            expect(CountCalls(CONNECT_ARGS)).toBe(1);
+            expect(CountCalls(['connection', 'up', 'cleveremote-hotspot'])).toBe(1);
+        });
     });
 
     it('getStatus reports disconnected when no active connection exists on the interface', async () => {
