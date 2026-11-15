@@ -3,7 +3,8 @@ import { WifiStatus } from './wifi.service';
 /**
  * - starting   : séquence de démarrage en cours (décision pas encore prise)
  * - connecting : tentative de connexion au réseau WiFi connu (hotspot coupé)
- * - setup      : aucun compte configuré, hotspot ouvert pour la première configuration
+ * - setup      : aucun compte configuré ; hotspot ouvert par défaut pour la première configuration,
+ *                peut être coupé / rouvert par un appui long sur le bouton (voir wifi.mode)
  * - recovery   : compte configuré mais hotspot ouvert (WiFi injoignable ou appui long sur le bouton)
  * - normal     : compte configuré, hotspot fermé
  */

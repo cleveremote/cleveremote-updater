@@ -165,14 +165,30 @@ describe('BoxModeService', () => {
             await expect(service.getMode()).resolves.toMatchObject({ mode: 'recovery', recoveryReason: 'connection-failed' });
         });
 
-        it('(re)starts the hotspot in setup mode', async () => {
+        it('stops the hotspot in setup mode, without falling back to recovery', async () => {
+            auth.hasConfiguredAccount.mockResolvedValue(false);
+            net.reachable = false;
+            await Boot();
+            LongPress();
+            await service.whenIdle();
+            expect(wifi.stopHotspot).toHaveBeenCalledTimes(1);
+            expect(wifi.reconnectClient).toHaveBeenCalledTimes(1);
+            expect(wifi.startHotspot).toHaveBeenCalledTimes(1);
+            await expect(service.getMode()).resolves.toMatchObject({
+                mode: 'setup', recoveryReason: null, wifi: { mode: 'disconnected' }
+            });
+        });
+
+        it('restarts the hotspot in setup mode when it is off', async () => {
             auth.hasConfiguredAccount.mockResolvedValue(false);
             await Boot();
             LongPress();
             await service.whenIdle();
-            expect(wifi.stopHotspot).not.toHaveBeenCalled();
+            LongPress();
+            await service.whenIdle();
+            expect(wifi.stopHotspot).toHaveBeenCalledTimes(1);
             expect(wifi.startHotspot).toHaveBeenCalledTimes(2);
-            await expect(service.getMode()).resolves.toMatchObject({ mode: 'setup' });
+            await expect(service.getMode()).resolves.toMatchObject({ mode: 'setup', wifi: { mode: 'ap' } });
         });
 
         it('ignores a long press while another transition is in progress', async () => {

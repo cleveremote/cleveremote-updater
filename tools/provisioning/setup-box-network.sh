@@ -102,7 +102,8 @@ systemctl restart avahi-daemon
 echo "  avahi-daemon redémarré"
 echo
 echo "dnsmasq lit ${DNSMASQ_SHARED_DIR} à chaque démarrage du hotspot :"
-echo "la config s'applique au prochain hotspot/start (ou appui long sur le bouton)."
+echo "la config s'applique au prochain hotspot/start (ou appui long sur le bouton ;"
+echo "si le hotspot est déjà ouvert : un appui long pour le couper, un second pour le rouvrir)."
 
 if [ "${PREVIOUS_HOST}" != "${BOX_HOST}" ]; then
   echo
