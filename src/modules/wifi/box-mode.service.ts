@@ -97,24 +97,25 @@ export class BoxModeService implements OnApplicationBootstrap, OnModuleDestroy {
         }
     }
 
-    // Appui long - setup : (re)démarre le hotspot ; normal : entre en recovery manuel ;
-    // recovery : en sort et tente le réseau connu (échec => recovery automatique)
+    // Appui long, hotspot coupé - setup : le rouvre ; normal : entre en recovery manuel.
+    // Hotspot ouvert - recovery : en sort et tente le réseau connu (échec => recovery automatique) ;
+    // setup : le coupe et tente au mieux un réseau déjà mémorisé, sans repli (il revient au prochain appui ou au redémarrage)
     private _onButtonLongPress(heldMs: number): void {
         this._runExclusive('recovery button', async () => {
-            if (!await this._hasConfiguredAccount()) {
-                this._logger.info({ heldMs }, 'recovery button: setup mode, (re)starting hotspot');
-                await this._wifiService.startHotspot({});
+            const isSetup = !await this._hasConfiguredAccount();
+            if ((await this._readStatus())?.mode !== 'ap') {
+                this._logger.info({ heldMs, isSetup }, 'recovery button: starting hotspot');
+                await (isSetup ? this._wifiService.startHotspot({}) : this._enterRecovery('manual'));
                 return;
             }
-            if ((await this._readStatus())?.mode === 'ap') {
-                this._logger.info({ heldMs }, 'recovery button: leaving recovery mode');
-                this._retryCount = 0;
-                await this._wifiService.stopHotspot();
-                await this._connectOrEnterRecovery(BOX_RECONNECT_TIMEOUT_MS, true);
+            this._logger.info({ heldMs, isSetup }, 'recovery button: stopping hotspot');
+            this._retryCount = 0;
+            await this._wifiService.stopHotspot();
+            if (isSetup) {
+                await this._wifiService.reconnectClient();
                 return;
             }
-            this._logger.info({ heldMs }, 'recovery button: entering manual recovery mode');
-            await this._enterRecovery('manual');
+            await this._connectOrEnterRecovery(BOX_RECONNECT_TIMEOUT_MS, true);
         });
     }
 
