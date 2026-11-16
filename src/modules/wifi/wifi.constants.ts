@@ -13,6 +13,10 @@ export const NMCLI_CONNECT_TIMEOUT_MS = 70 * 1000;
 export const WIFI_CONNECT_SCAN_ATTEMPTS = 4;
 export const WIFI_CONNECT_SCAN_RETRY_MS = 2000;
 
+// /updater/configure répond 202 puis coupe le hotspot : délai laissé à la réponse pour atteindre le front
+// (elle transite par Caddy puis par le hotspot lui-même)
+export const CONFIGURE_RESPONSE_GRACE_MS = 2000;
+
 export const WIFI_DEFAULT_INTERFACE = 'wlan0';
 export const WIFI_DEFAULT_HOTSPOT_CON_NAME = 'cleveremote-hotspot';
 export const WIFI_DEFAULT_HOTSPOT_SSID = 'cleveremote-setup';

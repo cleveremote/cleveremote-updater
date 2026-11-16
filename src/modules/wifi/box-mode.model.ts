@@ -1,14 +1,17 @@
 import { WifiStatus } from './wifi.service';
+import { ConfigureState } from './configure.model';
 
 /**
  * - starting   : séquence de démarrage en cours (décision pas encore prise)
- * - connecting : tentative de connexion au réseau WiFi connu (hotspot coupé)
+ * - connecting : tentative de connexion au réseau WiFi connu, ou configure en cours (hotspot coupé)
  * - setup      : aucun compte configuré ; hotspot ouvert par défaut pour la première configuration,
  *                peut être coupé / rouvert par un appui long sur le bouton (voir wifi.mode)
  * - recovery   : compte configuré mais hotspot ouvert (WiFi injoignable ou appui long sur le bouton)
  * - normal     : compte configuré, hotspot fermé
  */
 export type BoxMode = 'starting' | 'connecting' | 'setup' | 'recovery' | 'normal';
+// Modes transitoires : aucune décision possible tant qu'ils durent
+export type TransitionPhase = Extract<BoxMode, 'starting' | 'connecting'>;
 export type RecoveryReason = 'connection-failed' | 'manual';
 
 export interface BoxModeStatus {
@@ -17,4 +20,6 @@ export interface BoxModeStatus {
     recoveryReason: RecoveryReason | null;
     // null si l'état WiFi n'a pas pu être lu
     wifi: WifiStatus | null;
+    // résultat du dernier POST /updater/configure accepté
+    configure: ConfigureState;
 }

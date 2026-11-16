@@ -2,8 +2,11 @@ import * as os from 'os';
 import { BoxModeService } from './box-mode.service';
 import { WifiService, WifiStatus } from './wifi.service';
 import { AuthenticationService } from '../authentication/authentication.service';
+import { ConfigureService } from './configure.service';
+import { ConfigureState } from './configure.model';
 import { BOX_BOOT_CONNECT_TIMEOUT_MS, BOX_RECOVERY_MAX_RETRIES, BOX_STATUS_POLL_MS } from './wifi.constants';
 import { watchGpioLongPress } from '../../common/tools/gpio-long-press';
+import { ErrorCode } from '../../common/errors/error-code';
 
 // Jamais de vrai GPIO en test (la suite peut tourner sur le Raspberry Pi)
 jest.mock('../../common/tools/gpio-long-press', () => ({
@@ -19,6 +22,7 @@ describe('BoxModeService', () => {
     type WifiMethod = 'getStatus' | 'startHotspot' | 'stopHotspot' | 'reconnectClient' | 'getLinkState' | 'getSavedWifiSsids' | 'scanNetworks';
     let wifi: Record<WifiMethod, jest.Mock>;
     let auth: { hasConfiguredAccount: jest.Mock };
+    let configureState: ConfigureState;
     let logger: Record<'info' | 'warn' | 'error' | 'debug', jest.Mock>;
     let service: BoxModeService;
 
@@ -63,8 +67,14 @@ describe('BoxModeService', () => {
             scanNetworks: jest.fn().mockResolvedValue([{ ssid: 'HomeNetwork', signal: 70, security: 'WPA2' }])
         };
         auth = { hasConfiguredAccount: jest.fn().mockResolvedValue(true) };
+        configureState = { status: 'idle', errorCode: null, ssid: null, startedAt: null, finishedAt: null };
         logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
-        service = new BoxModeService(wifi as unknown as WifiService, auth as unknown as AuthenticationService, logger as any);
+        service = new BoxModeService(
+            wifi as unknown as WifiService,
+            auth as unknown as AuthenticationService,
+            { getState: () => configureState } as unknown as ConfigureService,
+            logger as any
+        );
         // L'attente entre deux lectures d'état est instantanée en test
         jest.spyOn(service as unknown as { _sleep: (ms: number) => Promise<void> }, '_sleep').mockResolvedValue(undefined);
     });
@@ -236,6 +246,14 @@ describe('BoxModeService', () => {
             await expect(service.getMode()).resolves.toMatchObject({ mode: 'recovery', recoveryReason: 'connection-failed' });
         });
 
+        it('does not retry while a configure is in progress', async () => {
+            await BootIntoAutoRecovery();
+            configureState = { ...configureState, status: 'in-progress', ssid: 'HomeNetwork' };
+            await Retry();
+            await service.whenIdle();
+            expect(wifi.stopHotspot).not.toHaveBeenCalled();
+        });
+
         it('never retries in manual recovery', async () => {
             await Boot();
             LongPress();
@@ -243,6 +261,30 @@ describe('BoxModeService', () => {
             await Retry();
             await service.whenIdle();
             expect(wifi.stopHotspot).not.toHaveBeenCalled();
+        });
+    });
+
+    describe('configure result', () => {
+        it('exposes the result of the last configure next to the mode', async () => {
+            net.reachable = false;
+            await Boot();
+            configureState = {
+                status: 'failed',
+                errorCode: ErrorCode.WIFI_INVALID_PSK,
+                ssid: 'HomeNetwork',
+                startedAt: '2026-11-16T10:00:00.000Z',
+                finishedAt: '2026-11-16T10:00:20.000Z'
+            };
+            await expect(service.getMode()).resolves.toMatchObject({ mode: 'recovery', configure: configureState });
+        });
+
+        it('reports the connecting mode while a configure is in progress', async () => {
+            auth.hasConfiguredAccount.mockResolvedValue(false);
+            await Boot();
+            configureState = { ...configureState, status: 'in-progress', ssid: 'HomeNetwork' };
+            await expect(service.getMode()).resolves.toMatchObject({
+                mode: 'connecting', recoveryReason: null, configure: { status: 'in-progress' }
+            });
         });
     });
 

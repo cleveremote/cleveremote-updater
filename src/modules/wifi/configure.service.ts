@@ -1,4 +1,11 @@
-import { BadRequestException, HttpStatus, Injectable, InternalServerErrorException, UnauthorizedException } from '@nestjs/common';
+import {
+    BadRequestException,
+    ConflictException,
+    HttpStatus,
+    Injectable,
+    InternalServerErrorException,
+    UnauthorizedException
+} from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { WifiService } from './wifi.service';
 import { AuthenticationService } from '../authentication/authentication.service';
@@ -8,15 +15,25 @@ import { ConfigureDto } from './dto/configure.dto';
 import { CheckPasswordDto } from './dto/check-password.dto';
 import { GlobalSettingsService } from '../global-settings/global-settings.service';
 import { ErrorCode, ErrorBody, GetErrorCode } from '../../common/errors/error-code';
+import { ConfigureState } from './configure.model';
+import { CONFIGURE_RESPONSE_GRACE_MS } from './wifi.constants';
 
 const SETUP_REQUIRED_FIELDS = ['deviceName', 'password'] as const;
 
 /**
- * Chaque échec lève une HttpException dont le corps porte un `code` (cf. ErrorCode) que le front traduit.
- * Une erreur WiFi déjà codée par WifiService (WIFI_INVALID_PSK, WIFI_NETWORK_NOT_FOUND...) est relayée telle quelle.
+ * La bascule WiFi coupe le hotspot (radio unique) par lequel le front a envoyé sa requête : une réponse émise
+ * après la bascule ne lui parvient jamais. configure() valide donc la requête, répond aussitôt (202), puis
+ * applique la configuration en arrière-plan ; le résultat est mémorisé et lu par le front via getMode().
+ *
+ * Un refus de la requête lève une HttpException dont le corps porte un `code` (cf. ErrorCode) que le front traduit.
+ * Un échec en arrière-plan porte le même type de code dans getState().errorCode : une erreur WiFi déjà codée par
+ * WifiService (WIFI_INVALID_PSK, WIFI_NETWORK_NOT_FOUND...) est relayée telle quelle.
  */
 @Injectable()
 export class ConfigureService {
+    private _state: ConfigureState = { status: 'idle', errorCode: null, ssid: null, startedAt: null, finishedAt: null };
+    private _pending: Promise<void> | null = null;
+
     public constructor(
         private readonly _wifiService: WifiService,
         private readonly _authenticationService: AuthenticationService,
@@ -25,19 +42,32 @@ export class ConfigureService {
     ) {
     }
 
-    // Setup tant qu'aucun compte n'est configuré, recovery ensuite (même règle que BoxModeService)
+    // Setup tant qu'aucun compte n'est configuré, recovery ensuite (même règle que BoxModeService).
+    // Résolue dès que la requête est acceptée : la configuration elle-même se poursuit en arrière-plan.
     public async configure(dto: ConfigureDto): Promise<boolean> {
+        this._assertNotInProgress();
         const isSetup = !await this._authenticationService.hasConfiguredAccount();
         if (isSetup) {
             this._assertSetupFields(dto);
         }
         await this._assertCurrentPassword(dto, isSetup);
-        if (isSetup) {
-            await this._setup(dto);
-        } else {
-            await this._recovery(dto);
-        }
+        // revérifié sans await avant de poser l'état : deux requêtes simultanées ne peuvent pas démarrer toutes les deux
+        this._assertNotInProgress();
+        this._state = { status: 'in-progress', errorCode: null, ssid: dto.ssid, startedAt: new Date().toISOString(), finishedAt: null };
+        this._pending = this._apply(dto, isSetup).finally(() => {
+            this._pending = null;
+        });
         return true;
+    }
+
+    // Résultat du dernier configure accepté
+    public getState(): ConfigureState {
+        return { ...this._state };
+    }
+
+    // Résolue quand aucune configuration n'est en cours (tests, arrêt propre)
+    public whenIdle(): Promise<void> {
+        return this._pending ?? Promise.resolve();
     }
 
     // Validation seule du mot de passe courant (étiquette en setup, compte configuré en recovery), sans rien modifier
@@ -55,6 +85,37 @@ export class ConfigureService {
         return true;
     }
 
+    // Ne rejette jamais : tout échec est mémorisé dans l'état
+    private async _apply(dto: ConfigureDto, isSetup: boolean): Promise<void> {
+        const mode = isSetup ? 'setup' : 'recovery';
+        try {
+            // la réponse 202 doit avoir atteint le front avant que la bascule ne coupe le hotspot
+            await this._sleep(CONFIGURE_RESPONSE_GRACE_MS);
+            await (isSetup ? this._setup(dto) : this._recovery(dto));
+            this._finish(null);
+            this._logger.info({ ssid: dto.ssid, mode }, 'configure: succeeded');
+        } catch (err) {
+            const errorCode = GetErrorCode(err) ?? ErrorCode.CONFIGURE_FAILED;
+            this._finish(errorCode);
+            this._logger.error({ err, ssid: dto.ssid, mode, errorCode }, 'configure: failed');
+        }
+    }
+
+    private _finish(errorCode: ErrorCode | null): void {
+        this._state = {
+            ...this._state,
+            status: errorCode === null ? 'succeeded' : 'failed',
+            errorCode,
+            finishedAt: new Date().toISOString()
+        };
+    }
+
+    private _assertNotInProgress(): void {
+        if (this._state.status === 'in-progress') {
+            throw new ConflictException(ErrorBody(HttpStatus.CONFLICT, ErrorCode.CONFIGURE_IN_PROGRESS, 'a configuration is already in progress'));
+        }
+    }
+
     private _assertSetupFields(dto: ConfigureDto): void {
         const missing = SETUP_REQUIRED_FIELDS.filter((field) => dto[field] === undefined);
         if (missing.length > 0) {
@@ -69,7 +130,7 @@ export class ConfigureService {
 
     private async _assertCurrentPassword(dto: CheckPasswordDto, isSetup: boolean): Promise<void> {
         const isValid = isSetup
-            ? await this._authenticationService.verifyInitialPassword(dto.login,dto.currentPassword)
+            ? await this._authenticationService.verifyInitialPassword(dto.login, dto.currentPassword)
             : await this._authenticationService.verifyConfiguredCredentials(dto.login, dto.currentPassword);
         if (!isValid) {
             this._logger.warn({ login: dto.login, mode: isSetup ? 'setup' : 'recovery' }, 'configure: invalid current password');
@@ -144,4 +205,6 @@ export class ConfigureService {
         }
         return new InternalServerErrorException(ErrorBody(HttpStatus.INTERNAL_SERVER_ERROR, fallback, message));
     }
+
+    private readonly _sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 }

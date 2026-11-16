@@ -10,7 +10,11 @@ export enum ErrorCode {
     SETUP_FIELDS_REQUIRED = 'SETUP_FIELDS_REQUIRED',
     INVALID_CURRENT_PASSWORD = 'INVALID_CURRENT_PASSWORD',
 
-    // Étapes de /updater/configure
+    // /updater/configure : requête refusée car une configuration est déjà en cours
+    CONFIGURE_IN_PROGRESS = 'CONFIGURE_IN_PROGRESS',
+
+    // Étapes de /updater/configure (résultat lu par le front dans getMode().configure.errorCode)
+    CONFIGURE_FAILED = 'CONFIGURE_FAILED',
     WIFI_CONNECT_FAILED = 'WIFI_CONNECT_FAILED',
     LOCAL_COORDINATES_SAVE_FAILED = 'LOCAL_COORDINATES_SAVE_FAILED',
     USER_SAVE_FAILED = 'USER_SAVE_FAILED',
