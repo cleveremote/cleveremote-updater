@@ -1,7 +1,6 @@
 import { BadRequestException, HttpException, HttpStatus } from '@nestjs/common';
 import { ConfigureService } from './configure.service';
 import { ConfigureDto } from './dto/configure.dto';
-import { CheckPasswordDto } from './dto/check-password.dto';
 import { WifiService } from './wifi.service';
 import { AuthenticationService } from '../authentication/authentication.service';
 import { GlobalSettingsService } from '../global-settings/global-settings.service';
@@ -11,7 +10,10 @@ import { CONFIGURE_RESPONSE_GRACE_MS } from './wifi.constants';
 
 describe('ConfigureService', () => {
     let wifi: { connect: jest.Mock; stopHotspot: jest.Mock };
-    let auth: Record<'hasConfiguredAccount' | 'verifyInitialPassword' | 'verifyConfiguredCredentials' | 'createUser', jest.Mock>;
+    let auth: Record<
+        'hasConfiguredAccount' | 'verifyInitialPassword' | 'verifyConfiguredCredentials' | 'createUser' | 'completeConfiguredUser',
+        jest.Mock
+    >;
     let settings: { setLocalCoordinates: jest.Mock };
     let logger: Record<'info' | 'warn' | 'error', jest.Mock>;
     let service: ConfigureService;
@@ -55,7 +57,8 @@ describe('ConfigureService', () => {
             hasConfiguredAccount: jest.fn().mockResolvedValue(false),
             verifyInitialPassword: jest.fn().mockResolvedValue(true),
             verifyConfiguredCredentials: jest.fn().mockResolvedValue(true),
-            createUser: jest.fn().mockResolvedValue({})
+            createUser: jest.fn().mockResolvedValue({}),
+            completeConfiguredUser: jest.fn().mockResolvedValue(undefined)
         };
         settings = { setLocalCoordinates: jest.fn().mockResolvedValue({}) };
         logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
@@ -123,7 +126,7 @@ describe('ConfigureService', () => {
         it('checks the label password, then connects, saves coordinates, creates the configured user and stops the hotspot', async () => {
             await Apply(SetupDto());
 
-            expect(auth.verifyInitialPassword).toHaveBeenCalledWith('alice', 'label-password');
+            expect(auth.verifyInitialPassword).toHaveBeenCalledWith('label-password');
             expect(auth.verifyConfiguredCredentials).not.toHaveBeenCalled();
             expect(wifi.connect).toHaveBeenCalledWith({ ssid: 'HomeNetwork', password: 'wifi-secret' });
             expect(settings.setLocalCoordinates).toHaveBeenCalledWith({ latitude: 48.85, longitude: 2.35 });
@@ -207,7 +210,7 @@ describe('ConfigureService', () => {
             auth.hasConfiguredAccount.mockResolvedValue(true);
         });
 
-        it('checks the user credentials, then only changes the WiFi', async () => {
+        it('checks the user credentials, then changes the WiFi and keeps the existing information', async () => {
             await Apply(RecoveryDto());
 
             expect(auth.verifyConfiguredCredentials).toHaveBeenCalledWith('alice', 'user-password');
@@ -215,6 +218,7 @@ describe('ConfigureService', () => {
             expect(wifi.connect).toHaveBeenCalledWith({ ssid: 'NewNetwork', password: 'wifi-secret' });
             expect(wifi.stopHotspot).toHaveBeenCalled();
             expect(auth.createUser).not.toHaveBeenCalled();
+            expect(auth.completeConfiguredUser).toHaveBeenCalledWith('alice', { email: undefined, password: undefined });
             expect(settings.setLocalCoordinates).not.toHaveBeenCalled();
             expect(service.getState().status).toBe('succeeded');
         });
@@ -228,82 +232,46 @@ describe('ConfigureService', () => {
             expect(body).toEqual(expect.objectContaining({ code: ErrorCode.INVALID_CURRENT_PASSWORD }));
             expect(wifi.connect).not.toHaveBeenCalled();
             expect(wifi.stopHotspot).not.toHaveBeenCalled();
-        });
-
-        it('ignores setup-only fields (no password reset)', async () => {
-            await Apply(RecoveryDto({ password: 'other-password', email: 'x@example.com' }));
-
-            expect(auth.createUser).not.toHaveBeenCalled();
-        });
-    });
-
-    describe('checkPassword', () => {
-        async function CheckFailure(dto: CheckPasswordDto): Promise<{ status: number; body: Record<string, unknown> }> {
-            const err = await service.checkPassword(dto).then(() => undefined, (e: unknown) => e);
-            expect(err).toBeInstanceOf(HttpException);
-            const http = err as HttpException;
-            return { status: http.getStatus(), body: http.getResponse() as Record<string, unknown> };
-        }
-
-        function ExpectNothingChanged(): void {
-            expect(wifi.connect).not.toHaveBeenCalled();
-            expect(wifi.stopHotspot).not.toHaveBeenCalled();
-            expect(auth.createUser).not.toHaveBeenCalled();
+            expect(auth.completeConfiguredUser).not.toHaveBeenCalled();
             expect(settings.setLocalCoordinates).not.toHaveBeenCalled();
-        }
-
-        describe('setup mode', () => {
-            it('checks the label password without login and changes nothing', async () => {
-                await expect(service.checkPassword({ currentPassword: 'label-password' })).resolves.toBe(true);
-
-                expect(auth.verifyInitialPassword).toHaveBeenCalledWith(undefined, 'label-password');
-                expect(auth.verifyConfiguredCredentials).not.toHaveBeenCalled();
-                ExpectNothingChanged();
-            });
-
-            it('returns 401 INVALID_CURRENT_PASSWORD when the label password is wrong', async () => {
-                auth.verifyInitialPassword.mockResolvedValue(false);
-
-                const { status, body } = await CheckFailure({ currentPassword: 'wrong' });
-
-                expect(status).toBe(HttpStatus.UNAUTHORIZED);
-                expect(body).toEqual(expect.objectContaining({ statusCode: 401, code: ErrorCode.INVALID_CURRENT_PASSWORD }));
-                ExpectNothingChanged();
-            });
         });
 
-        describe('recovery mode', () => {
-            beforeEach(() => {
-                auth.hasConfiguredAccount.mockResolvedValue(true);
-            });
+        it('does not require the setup-only fields', async () => {
+            await Apply(RecoveryDto({ deviceName: undefined, password: undefined }));
 
-            it('checks the configured account credentials and changes nothing', async () => {
-                await expect(service.checkPassword({ login: 'alice', currentPassword: 'user-password' })).resolves.toBe(true);
+            expect(service.getState().status).toBe('succeeded');
+        });
 
-                expect(auth.verifyConfiguredCredentials).toHaveBeenCalledWith('alice', 'user-password');
-                expect(auth.verifyInitialPassword).not.toHaveBeenCalled();
-                ExpectNothingChanged();
-            });
+        it('completes the existing information with the supplied fields, without recreating the account', async () => {
+            await Apply(RecoveryDto({
+                email: 'new@example.com',
+                password: 'other-password',
+                localCoordinates: { latitude: 45.76, longitude: 4.83 }
+            }));
 
-            it('returns 401 INVALID_CURRENT_PASSWORD when the credentials are wrong', async () => {
-                auth.verifyConfiguredCredentials.mockResolvedValue(false);
+            expect(settings.setLocalCoordinates).toHaveBeenCalledWith({ latitude: 45.76, longitude: 4.83 });
+            expect(auth.completeConfiguredUser).toHaveBeenCalledWith('alice', { email: 'new@example.com', password: 'other-password' });
+            expect(auth.createUser).not.toHaveBeenCalled();
+            expect(wifi.stopHotspot).toHaveBeenCalled();
+        });
 
-                const { status, body } = await CheckFailure({ login: 'alice', currentPassword: 'wrong' });
+        it('records the WiFi error code and completes nothing when the connection fails', async () => {
+            wifi.connect.mockRejectedValue(new BadRequestException(ErrorBody(HttpStatus.BAD_REQUEST, ErrorCode.WIFI_INVALID_PSK, 'bad psk')));
 
-                expect(status).toBe(HttpStatus.UNAUTHORIZED);
-                expect(body).toEqual(expect.objectContaining({ code: ErrorCode.INVALID_CURRENT_PASSWORD }));
-            });
+            await Apply(RecoveryDto({ email: 'new@example.com', localCoordinates: { latitude: 45.76, longitude: 4.83 } }));
 
-            it('returns 400 VALIDATION_FAILED on login when it is missing', async () => {
-                const { status, body } = await CheckFailure({ currentPassword: 'user-password' });
+            expect(service.getState()).toEqual(expect.objectContaining({ status: 'failed', errorCode: ErrorCode.WIFI_INVALID_PSK }));
+            expect(settings.setLocalCoordinates).not.toHaveBeenCalled();
+            expect(auth.completeConfiguredUser).not.toHaveBeenCalled();
+        });
 
-                expect(status).toBe(HttpStatus.BAD_REQUEST);
-                expect(body).toEqual(expect.objectContaining({
-                    code: ErrorCode.VALIDATION_FAILED,
-                    details: { fields: [{ field: 'login', constraints: ['isDefined'] }] }
-                }));
-                expect(auth.verifyConfiguredCredentials).not.toHaveBeenCalled();
-            });
+        it('records USER_SAVE_FAILED when the account cannot be completed', async () => {
+            auth.completeConfiguredUser.mockRejectedValue(new Error('mongo down'));
+
+            await Apply(RecoveryDto({ email: 'new@example.com' }));
+
+            expect(service.getState()).toEqual(expect.objectContaining({ status: 'failed', errorCode: ErrorCode.USER_SAVE_FAILED }));
+            expect(wifi.stopHotspot).not.toHaveBeenCalled();
         });
     });
 });

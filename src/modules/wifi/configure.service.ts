@@ -12,7 +12,6 @@ import { AuthenticationService } from '../authentication/authentication.service'
 import { AuthenticationModel } from '../authentication/authentication.model';
 import { Role } from '../authentication/role.enum';
 import { ConfigureDto } from './dto/configure.dto';
-import { CheckPasswordDto } from './dto/check-password.dto';
 import { GlobalSettingsService } from '../global-settings/global-settings.service';
 import { ErrorCode, ErrorBody, GetErrorCode } from '../../common/errors/error-code';
 import { ConfigureState } from './configure.model';
@@ -43,6 +42,7 @@ export class ConfigureService {
     }
 
     // Setup tant qu'aucun compte n'est configuré, recovery ensuite (même règle que BoxModeService).
+    // currentPassword seul donne l'autorisation : mot de passe de l'étiquette en setup, celui du compte en recovery.
     // Résolue dès que la requête est acceptée : la configuration elle-même se poursuit en arrière-plan.
     public async configure(dto: ConfigureDto): Promise<boolean> {
         this._assertNotInProgress();
@@ -68,21 +68,6 @@ export class ConfigureService {
     // Résolue quand aucune configuration n'est en cours (tests, arrêt propre)
     public whenIdle(): Promise<void> {
         return this._pending ?? Promise.resolve();
-    }
-
-    // Validation seule du mot de passe courant (étiquette en setup, compte configuré en recovery), sans rien modifier
-    public async checkPassword(dto: CheckPasswordDto): Promise<boolean> {
-        const isSetup = !await this._authenticationService.hasConfiguredAccount();
-        if (!isSetup && dto.login === undefined) {
-            throw new BadRequestException(ErrorBody(
-                HttpStatus.BAD_REQUEST,
-                ErrorCode.VALIDATION_FAILED,
-                'invalid request: login',
-                { fields: [{ field: 'login', constraints: ['isDefined'] }] }
-            ));
-        }
-        await this._assertCurrentPassword(dto, isSetup);
-        return true;
     }
 
     // Ne rejette jamais : tout échec est mémorisé dans l'état
@@ -128,12 +113,18 @@ export class ConfigureService {
         }
     }
 
-    private async _assertCurrentPassword(dto: CheckPasswordDto, isSetup: boolean): Promise<void> {
+    private async _assertCurrentPassword(dto: ConfigureDto, isSetup: boolean): Promise<void> {
         const isValid = isSetup
-            ? await this._authenticationService.verifyInitialPassword(dto.login, dto.currentPassword)
+            ? await this._authenticationService.verifyInitialPassword(dto.currentPassword, dto.login)
             : await this._authenticationService.verifyConfiguredCredentials(dto.login, dto.currentPassword);
         if (!isValid) {
             this._logger.warn({ login: dto.login, mode: isSetup ? 'setup' : 'recovery' }, 'configure: invalid current password');
+            this._state = {
+                ...this._state,
+                status: 'failed',
+                errorCode: ErrorCode.INVALID_CURRENT_PASSWORD,
+                finishedAt: new Date().toISOString()
+            };
             throw new UnauthorizedException(ErrorBody(HttpStatus.UNAUTHORIZED, ErrorCode.INVALID_CURRENT_PASSWORD, 'invalid current password'));
         }
     }
@@ -147,9 +138,14 @@ export class ConfigureService {
         await this._stopHotspot();
     }
 
-    // Recovery : seul le WiFi change, le compte et les réglages restent ceux du setup
+    // Recovery : le WiFi change et les informations déjà présentes sont complétées par les champs fournis
+    // (coordonnées, email, nouveau mot de passe) ; un champ absent garde sa valeur
     private async _recovery(dto: ConfigureDto): Promise<void> {
         await this._connect(dto);
+        if (dto.localCoordinates) {
+            await this._saveLocalCoordinates(dto);
+        }
+        await this._completeUser(dto);
         await this._stopHotspot();
     }
 
@@ -186,6 +182,15 @@ export class ConfigureService {
         } catch (err) {
             this._logger.error({ err, login: dto.login }, 'configure: failed to create or update user');
             throw this._toCodedError(err, ErrorCode.USER_SAVE_FAILED, 'failed to create or update user');
+        }
+    }
+
+    private async _completeUser(dto: ConfigureDto): Promise<void> {
+        try {
+            await this._authenticationService.completeConfiguredUser(dto.login, { email: dto.email, password: dto.password });
+        } catch (err) {
+            this._logger.error({ err, login: dto.login }, 'configure: failed to complete user');
+            throw this._toCodedError(err, ErrorCode.USER_SAVE_FAILED, 'failed to complete user');
         }
     }
 

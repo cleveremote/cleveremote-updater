@@ -3,7 +3,6 @@ import { WifiService, WifiStatus, WifiNetwork } from './wifi.service';
 import { ConnectWifiDto } from './dto/connect-wifi.dto';
 import { StartHotspotDto } from './dto/start-hotspot.dto';
 import { ConfigureDto } from './dto/configure.dto';
-import { CheckPasswordDto } from './dto/check-password.dto';
 import { ConfigureService } from './configure.service';
 import { BoxModeService } from './box-mode.service';
 import { BoxModeStatus } from './box-mode.model';
@@ -38,14 +37,6 @@ export class WifiController {
     @HttpCode(HttpStatus.ACCEPTED)
     public configure(@Body() dto: ConfigureDto): Promise<boolean> {
         return this._configureService.configure(dto);
-    }
-
-    // Vérifie le mot de passe courant (setup : étiquette, recovery : login + mot de passe) sans rien modifier.
-    // 200 true si valide, sinon 401 INVALID_CURRENT_PASSWORD
-    @Post('checkPassword')
-    @HttpCode(HttpStatus.OK)
-    public checkPassword(@Body() dto: CheckPasswordDto): Promise<boolean> {
-        return this._configureService.checkPassword(dto);
     }
 
     @Get('getStatus')

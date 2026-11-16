@@ -4,9 +4,10 @@ import { LocalCoordinatesDto } from './local-coordinates.dto';
 
 /**
  * - setup    : { deviceName, ssid, psk, login, email?, currentPassword, password, localCoordinates? }
- * - recovery : { ssid, psk, login, currentPassword }
+ * - recovery : { ssid, psk, login, currentPassword, email?, password?, localCoordinates? }
  * Le mode n'est connu qu'au moment de l'appel : les champs propres au setup sont donc optionnels ici
- * et leur présence est vérifiée par ConfigureService.
+ * et leur présence est vérifiée par ConfigureService. En recovery, email / password / localCoordinates
+ * complètent les informations déjà présentes ; absents, ils gardent leur valeur.
  */
 export class ConfigureDto {
 
@@ -33,13 +34,13 @@ export class ConfigureDto {
     @Length(3, 254)
     public email?: string;
 
-    // Mot de passe accepté par la box au moment de l'appel : celui de l'étiquette en setup,
-    // celui choisi par l'utilisateur en recovery (vérifié contre le hash en base)
+    // Seul élément d'autorisation : mot de passe de l'étiquette en setup (login ignoré pour la vérification),
+    // celui du compte `login` en recovery (vérifié contre le hash en base)
     @IsString()
     @Length(1, 72)
     public currentPassword: string;
 
-    // Nouveau mot de passe du compte (setup uniquement)
+    // Nouveau mot de passe du compte : obligatoire en setup, optionnel en recovery (inchangé si absent)
     @IsOptional()
     @IsString()
     @Length(8, 64)

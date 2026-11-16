@@ -7,7 +7,7 @@ import { Role } from './role.enum';
 describe('AuthenticationService password checks', () => {
     // coût minimal : le coût réel (13) prend plusieurs secondes sur le Raspberry Pi
     const hash = (password: string): string => bcrypt.hashSync(password, 4);
-    let repository: { findByLogin: jest.Mock };
+    let repository: { findByLogin: jest.Mock; updateByLogin: jest.Mock };
     let config: { get: jest.Mock };
     let logger: Record<'info' | 'warn' | 'error', jest.Mock>;
     let service: AuthenticationService;
@@ -19,7 +19,7 @@ describe('AuthenticationService password checks', () => {
     }
 
     beforeEach(() => {
-        repository = { findByLogin: jest.fn() };
+        repository = { findByLogin: jest.fn(), updateByLogin: jest.fn().mockResolvedValue({}) };
         config = { get: jest.fn((key: string) => (key === 'UPDATER_ID' ? 'box-01' : undefined)) };
         logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
         service = new AuthenticationService(repository as unknown as AuthenticationRepository, config as any, logger as any);
@@ -65,6 +65,31 @@ describe('AuthenticationService password checks', () => {
             repository.findByLogin.mockResolvedValue(user);
 
             await expect(service.verifyConfiguredCredentials('alice', 'user-password')).resolves.toBe(false);
+        });
+    });
+
+    describe('completeConfiguredUser', () => {
+        it('updates only the supplied fields and hashes the new password', async () => {
+            await service.completeConfiguredUser('alice', { email: 'new@example.com', password: 'other-password' });
+
+            const saved = repository.updateByLogin.mock.calls[0][0] as AuthenticationModel;
+            expect(saved).toEqual(expect.objectContaining({ login: 'alice', email: 'new@example.com' }));
+            expect(saved.role).toBeUndefined();
+            expect(saved.isConfigured).toBeUndefined();
+            expect(saved.deletedAt).toBeUndefined();
+            expect(bcrypt.compareSync('other-password', saved.password)).toBe(true);
+        });
+
+        it('keeps the current password when no new one is supplied', async () => {
+            await service.completeConfiguredUser('alice', { email: 'new@example.com' });
+
+            expect(repository.updateByLogin.mock.calls[0][0].password).toBeUndefined();
+        });
+
+        it('writes nothing when no field is supplied', async () => {
+            await service.completeConfiguredUser('alice', {});
+
+            expect(repository.updateByLogin).not.toHaveBeenCalled();
         });
     });
 });

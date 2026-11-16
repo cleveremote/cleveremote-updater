@@ -47,8 +47,9 @@ export class AuthenticationService implements OnApplicationBootstrap {
         return isValid;
     }
 
-    // Setup : mot de passe de l'étiquette, posé (haché) sur le compte technique par initAuthentication()
-    public async verifyInitialPassword(login: string, password: string): Promise<boolean> {
+    // Setup : mot de passe de l'étiquette, posé (haché) sur le compte technique par initAuthentication().
+    // Seul le mot de passe compte : le compte technique est celui de la box, pas le login choisi par l'utilisateur.
+    public async verifyInitialPassword(password: string,login:string): Promise<boolean> {
         const technical = await this._authenticationRepository.findByLogin(login);
         if (!technical?.password) {
             this._logger.error({ login }, 'initial password check: technical account not found');
@@ -83,6 +84,21 @@ export class AuthenticationService implements OnApplicationBootstrap {
         }
         this._logger.info({ login: user.login }, 'user not found, creating it');
         return this._authenticationRepository.create(user);
+    }
+
+    // Recovery : complète le compte configuré avec les champs fournis (email, nouveau mot de passe).
+    // Un champ absent conserve sa valeur en base ; rien n'est écrit si aucun champ n'est fourni.
+    public async completeConfiguredUser(login: string, changes: { email?: string; password?: string }): Promise<void> {
+        if (changes.email === undefined && changes.password === undefined) {
+            return;
+        }
+        // undefined => champ ignoré par mongoose (cf. AuthenticationMapper.mapToSchema)
+        await this._authenticationRepository.updateByLogin({
+            login,
+            email: changes.email,
+            password: changes.password === undefined ? undefined : bcrypt.hashSync(changes.password, bcrypt.genSaltSync(13))
+        } as AuthenticationModel);
+        this._logger.info({ login, email: changes.email !== undefined, password: changes.password !== undefined }, 'configured user completed');
     }
 
     private static _isConfigured(user: AuthenticationModel): boolean {
