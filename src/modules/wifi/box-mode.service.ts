@@ -2,9 +2,10 @@ import * as os from 'os';
 import { Injectable, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { WifiService, WifiStatus } from './wifi.service';
-import { BoxMode, BoxModeStatus, RecoveryReason } from './box-mode.model';
+import { BoxModeStatus, RecoveryReason, TransitionPhase } from './box-mode.model';
 import { BoxGpio } from './box-gpio';
 import { AuthenticationService } from '../authentication/authentication.service';
+import { ConfigureService } from './configure.service';
 import {
     BOX_BOOT_CONNECT_TIMEOUT_MS,
     BOX_RECONNECT_TIMEOUT_MS,
@@ -13,8 +14,6 @@ import {
     BOX_STATUS_LED_CHECK_INTERVAL_MS,
     BOX_STATUS_POLL_MS
 } from './wifi.constants';
-
-type TransitionPhase = Extract<BoxMode, 'starting' | 'connecting'>;
 
 /**
  * Modes de la box : décision au démarrage, recovery automatique (avec nouvelles tentatives), recovery manuel
@@ -34,6 +33,7 @@ export class BoxModeService implements OnApplicationBootstrap, OnModuleDestroy {
     public constructor(
         private readonly _wifiService: WifiService,
         private readonly _authenticationService: AuthenticationService,
+        private readonly _configureService: ConfigureService,
         @InjectPinoLogger(BoxModeService.name) private readonly _logger: PinoLogger
     ) {
     }
@@ -57,18 +57,16 @@ export class BoxModeService implements OnApplicationBootstrap, OnModuleDestroy {
     }
 
     public async getMode(): Promise<BoxModeStatus> {
+        // lu avant tout await : un configure qui se termine pendant les lectures suivantes reste rapporté 'in-progress'
+        const configure = this._configureService.getState();
         const wifi = await this._readStatus();
-        if (this._phase !== null) {
-            return { mode: this._phase, recoveryReason: null, wifi };
+        const transient = this._phase ?? (configure.status === 'in-progress' ? 'connecting' : null);
+        if (transient !== null || !await this._hasConfiguredAccount()) {
+            return { mode: transient ?? 'setup', recoveryReason: null, wifi, configure };
         }
-        if (!await this._hasConfiguredAccount()) {
-            return { mode: 'setup', recoveryReason: null, wifi };
-        }
-        if (wifi?.mode === 'ap') {
-            // hotspot ouvert hors de ce service (POST hotspot/start) => assimilé à un recovery manuel
-            return { mode: 'recovery', recoveryReason: this._recoveryReason ?? 'manual', wifi };
-        }
-        return { mode: 'normal', recoveryReason: null, wifi };
+        // hotspot ouvert hors de ce service (POST hotspot/start) => assimilé à un recovery manuel
+        const recoveryReason = wifi?.mode === 'ap' ? this._recoveryReason ?? 'manual' : null;
+        return { mode: recoveryReason === null ? 'normal' : 'recovery', recoveryReason, wifi, configure };
     }
 
     // Résolue quand aucune transition n'est en cours (tests, arrêt propre)
@@ -122,8 +120,10 @@ export class BoxModeService implements OnApplicationBootstrap, OnModuleDestroy {
     // Le hotspot et le client partagent la même radio : chaque tentative coupe le hotspot.
     // On ne tente donc que si un réseau connu est visible dans le scan, et au plus BOX_RECOVERY_MAX_RETRIES fois
     // (au-delà, le mot de passe a probablement changé : on laisse le hotspot stable pour le front).
+    // Jamais pendant un configure, qui pilote déjà le WiFi.
     private async _retryRecoveryIfPossible(): Promise<void> {
         const isEligible = this._transition === null
+            && this._configureService.getState().status !== 'in-progress'
             && this._recoveryReason === 'connection-failed'
             && this._retryCount < BOX_RECOVERY_MAX_RETRIES;
         if (!isEligible) {

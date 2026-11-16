@@ -32,7 +32,10 @@ export class WifiController {
         return this._wifiService.connect(dto);
     }
 
+    // Répond 202 dès que la requête est validée, puis bascule le WiFi en arrière-plan : le hotspot étant coupé
+    // par la bascule, le résultat ne peut pas être renvoyé ici. Le front le lit dans getMode().configure.
     @Post('configure')
+    @HttpCode(HttpStatus.ACCEPTED)
     public configure(@Body() dto: ConfigureDto): Promise<boolean> {
         return this._configureService.configure(dto);
     }
