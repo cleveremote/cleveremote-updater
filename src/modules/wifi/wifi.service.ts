@@ -26,8 +26,10 @@ import {
     WIFI_DEFAULT_HOTSPOT_CON_NAME,
     WIFI_DEFAULT_HOTSPOT_SSID,
     WIFI_DEFAULT_INTERFACE,
+    WIFI_HOTSPOT_CHANNEL,
     WIFI_HOTSPOT_DNSMASQ_CONF_PATH,
-    WIFI_HOTSPOT_IPV4_CIDR
+    WIFI_HOTSPOT_IPV4_CIDR,
+    WIFI_HOTSPOT_POWERSAVE_DISABLED
 } from './wifi.constants';
 
 export { WifiNetwork } from './nmcli-output.parser';
@@ -254,6 +256,8 @@ export class WifiService implements OnApplicationBootstrap, OnModuleDestroy {
                 'connection', 'modify', conName,
                 '802-11-wireless.mode', 'ap',
                 '802-11-wireless.band', 'bg',
+                '802-11-wireless.channel', WIFI_HOTSPOT_CHANNEL,
+                '802-11-wireless.powersave', WIFI_HOTSPOT_POWERSAVE_DISABLED,
                 'ipv4.method', 'shared',
                 'ipv4.addresses', WIFI_HOTSPOT_IPV4_CIDR,
                 'wifi-sec.key-mgmt', 'wpa-psk',

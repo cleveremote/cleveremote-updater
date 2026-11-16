@@ -93,6 +93,8 @@ describe('WifiService', () => {
                 'connection', 'modify', 'cleveremote-hotspot',
                 '802-11-wireless.mode', 'ap',
                 '802-11-wireless.band', 'bg',
+                '802-11-wireless.channel', '6',
+                '802-11-wireless.powersave', '2',
                 'ipv4.method', 'shared',
                 'ipv4.addresses', '10.42.0.1/24',
                 'wifi-sec.key-mgmt', 'wpa-psk',
