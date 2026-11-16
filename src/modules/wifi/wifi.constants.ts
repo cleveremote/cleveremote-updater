@@ -25,6 +25,15 @@ export const WIFI_DEFAULT_HOTSPOT_SSID = 'cleveremote-setup';
 // Doit rester alignée avec le SAN "IP:" de tools/certs-generator/gen-pi-cert.sh.
 export const WIFI_HOTSPOT_IPV4_CIDR = '10.42.0.1/24';
 
+// Canal fixe du hotspot (bande bg). Laissé à 0, NetworkManager a pris le canal 13 sur un Pi 5 (BCM4345/6) :
+// la box n'y joignait plus le téléphone (≈ 80 % des trames vers lui en échec radio), alors que lui la joignait.
+// Le 6 est accepté par tous les appareils, quel que soit leur pays WiFi.
+export const WIFI_HOTSPOT_CHANNEL = '6';
+
+// 802-11-wireless.powersave du profil hotspot : 2 = désactivé. Avec la valeur par défaut, NetworkManager
+// réactive le power save de wlan0 à chaque activation du hotspot (un `iw set power_save off` ne tient pas).
+export const WIFI_HOTSPOT_POWERSAVE_DISABLED = '2';
+
 // Config dnsmasq du hotspot, déposée par tools/provisioning/setup-box-network.sh : répond <hostname>.local
 // en DNS unicast aux clients qui ne font pas de mDNS (Android, Windows en profil "Public").
 export const WIFI_HOTSPOT_DNSMASQ_CONF_PATH = '/etc/NetworkManager/dnsmasq-shared.d/cleveremote-box.conf';
