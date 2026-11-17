@@ -79,7 +79,7 @@ export class BoxModeService implements OnApplicationBootstrap, OnModuleDestroy {
         try {
             if (!await this._hasConfiguredAccount()) {
                 this._logger.info('startup: no configured account, starting hotspot (setup mode)');
-                await this._wifiService.startHotspot({});
+                await this._wifiService.startHotspot();
                 return;
             }
             // Hotspot resté actif (application redémarrée pendant un recovery) : coupé, puis reconnexion explicite
@@ -103,7 +103,7 @@ export class BoxModeService implements OnApplicationBootstrap, OnModuleDestroy {
             const isSetup = !await this._hasConfiguredAccount();
             if ((await this._readStatus())?.mode !== 'ap') {
                 this._logger.info({ heldMs, isSetup }, 'recovery button: starting hotspot');
-                await (isSetup ? this._wifiService.startHotspot({}) : this._enterRecovery('manual'));
+                await (isSetup ? this._wifiService.startHotspot() : this._enterRecovery('manual'));
                 return;
             }
             this._logger.info({ heldMs, isSetup }, 'recovery button: stopping hotspot');
@@ -180,7 +180,7 @@ export class BoxModeService implements OnApplicationBootstrap, OnModuleDestroy {
     private async _enterRecovery(reason: RecoveryReason): Promise<void> {
         // posée avant l'ouverture du hotspot : le front qui s'y connecte lit directement la bonne raison
         this._recoveryReason = reason;
-        await this._wifiService.startHotspot({});
+        await this._wifiService.startHotspot();
         this._logger.info({ reason }, 'recovery mode: hotspot started');
     }
 

@@ -16,7 +16,6 @@ import { ActiveConnectionRow, DeviceShowInfo, NmcliOutputParser, WifiNetwork } f
 import { WifiErrorMapper } from './wifi-error.mapper';
 import { ErrorCode, ErrorBody } from '../../common/errors/error-code';
 import { ConnectWifiDto } from './dto/connect-wifi.dto';
-import { StartHotspotDto } from './dto/start-hotspot.dto';
 import {
     NMCLI_CONNECT_TIMEOUT_MS,
     NMCLI_CONNECT_WAIT_S,
@@ -79,11 +78,12 @@ export class WifiService implements OnApplicationBootstrap, OnModuleDestroy {
         clearInterval(this._rescanTimer);
     }
 
-    public async startHotspot(dto: StartHotspotDto): Promise<WifiStatus> {
+    // SSID et mot de passe lus depuis la configuration (.env : WIFI_HOTSPOT_SSID, WIFI_HOTSPOT_PASSWORD)
+    public async startHotspot(): Promise<WifiStatus> {
         this._assertLinux();
         const conName = this._hotspotConnectionName();
         const iface = this._interfaceName();
-        const { ssid, password } = this._resolveHotspotCredentials(dto);
+        const { ssid, password } = this._resolveHotspotCredentials();
         await this._deleteHotspotProfile(conName);
         await this._createHotspotProfile(conName, iface, ssid, password);
         await this._run(['connection', 'up', conName], 'start hotspot: activate');
@@ -290,7 +290,7 @@ export class WifiService implements OnApplicationBootstrap, OnModuleDestroy {
 
     private async _restartHotspotAfterFailedConnect(): Promise<void> {
         try {
-            await this.startHotspot({});
+            await this.startHotspot();
         } catch (err) {
             this._logger.error({ err }, 'connect: failed to restart hotspot after failed connection attempt');
         }
@@ -334,9 +334,9 @@ export class WifiService implements OnApplicationBootstrap, OnModuleDestroy {
         return { interface: iface, mode, connectionName: active.name, ssid, deviceState: device.state };
     }
 
-    private _resolveHotspotCredentials(dto: StartHotspotDto): { ssid: string; password: string } {
-        const ssid = dto.ssid ?? this._config.get<string>('WIFI_HOTSPOT_SSID') ?? WIFI_DEFAULT_HOTSPOT_SSID;
-        const password = 'Nya0113?'//dto.password ?? this._config.get<string>('WIFI_HOTSPOT_PASSWORD');
+    private _resolveHotspotCredentials(): { ssid: string; password: string } {
+        const ssid = this._config.get<string>('WIFI_HOTSPOT_SSID') || WIFI_DEFAULT_HOTSPOT_SSID;
+        const password = this._config.get<string>('WIFI_HOTSPOT_PASSWORD');
         if (password === undefined || password.length === 0) {
             throw new InternalServerErrorException(ErrorBody(
                 HttpStatus.INTERNAL_SERVER_ERROR, ErrorCode.WIFI_HOTSPOT_PASSWORD_NOT_CONFIGURED, 'WIFI_HOTSPOT_PASSWORD is not configured'

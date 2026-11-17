@@ -79,7 +79,7 @@ describe('WifiService', () => {
             ssidStdout: '802-11-wireless.ssid:cleveremote-setup'
         });
 
-        const status = await service.startHotspot({});
+        const status = await service.startHotspot();
 
         const calledArgSets = nmcli.run.mock.calls.map((call) => call[0]);
         expect(calledArgSets).toEqual([
@@ -112,7 +112,7 @@ describe('WifiService', () => {
 
     it('throws and never calls nmcli when no hotspot password is configured or supplied', async () => {
         config.get.mockReturnValue(undefined);
-        await expect(service.startHotspot({})).rejects.toThrow('WIFI_HOTSPOT_PASSWORD is not configured');
+        await expect(service.startHotspot()).rejects.toThrow('WIFI_HOTSPOT_PASSWORD is not configured');
         expect(nmcli.run).not.toHaveBeenCalled();
     });
 
@@ -315,7 +315,7 @@ describe('WifiService', () => {
     });
 
     it.each([
-        ['startHotspot', () => service.startHotspot({})],
+        ['startHotspot', () => service.startHotspot()],
         ['stopHotspot', () => service.stopHotspot()],
         ['connect', () => service.connect({ ssid: 'x', password: 'password1' })],
         ['getStatus', () => service.getStatus()],
@@ -335,7 +335,7 @@ describe('WifiService', () => {
             return Promise.resolve({ stdout: '', stderr: '' });
         });
 
-        await expect(service.startHotspot({})).rejects.toThrow();
+        await expect(service.startHotspot()).rejects.toThrow();
         const loggedArgs = logger.error.mock.calls[0][0].args;
         expect(loggedArgs).toContain('***');
         expect(loggedArgs).not.toContain('supersecret');
