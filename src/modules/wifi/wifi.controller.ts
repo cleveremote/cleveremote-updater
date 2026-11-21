@@ -1,5 +1,5 @@
 import { Body, Controller, Get, HttpCode, HttpStatus, Post } from '@nestjs/common';
-import { WifiService, WifiStatus, WifiNetwork } from './wifi.service';
+import { WifiService, WifiStatus, WifiNetworkListItem } from './wifi.service';
 import { ConnectWifiDto } from './dto/connect-wifi.dto';
 import { ConfigureDto } from './dto/configure.dto';
 import { ConfigureService } from './configure.service';
@@ -13,11 +13,6 @@ export class WifiController {
         private readonly _configureService: ConfigureService,
         private readonly _boxModeService: BoxModeService
     ) {
-    }
-
-    @Post('hotspot/start')
-    public startHotspot(): Promise<WifiStatus> {
-        return this._wifiService.startHotspot();
     }
 
     @Post('hotspot/stop')
@@ -50,7 +45,7 @@ export class WifiController {
     }
 
     @Get('getNetworksList')
-    public scanNetworks(): Promise<WifiNetwork[]> {
-        return this._wifiService.scanNetworks();
+    public getNetworksList(): Promise<WifiNetworkListItem[]> {
+        return this._wifiService.listNetworks();
     }
 }

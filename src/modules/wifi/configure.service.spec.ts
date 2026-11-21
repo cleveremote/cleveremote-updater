@@ -1,6 +1,7 @@
 import { BadRequestException, HttpException, HttpStatus } from '@nestjs/common';
 import { ConfigureService } from './configure.service';
 import { ConfigureDto } from './dto/configure.dto';
+import { ConnectLocalNetworkDto } from './dto/connect-local-network.dto';
 import { WifiService } from './wifi.service';
 import { AuthenticationService } from '../authentication/authentication.service';
 import { GlobalSettingsService } from '../global-settings/global-settings.service';
@@ -9,7 +10,7 @@ import { ErrorCode, ErrorBody } from '../../common/errors/error-code';
 import { CONFIGURE_RESPONSE_GRACE_MS } from './wifi.constants';
 
 describe('ConfigureService', () => {
-    let wifi: { connect: jest.Mock; stopHotspot: jest.Mock };
+    let wifi: { connect: jest.Mock; stopHotspot: jest.Mock; getSavedWifiSsids: jest.Mock };
     let auth: Record<
         'hasConfiguredAccount' | 'verifyInitialPassword' | 'verifyConfiguredCredentials' | 'createUser' | 'completeConfiguredUser',
         jest.Mock
@@ -52,7 +53,11 @@ describe('ConfigureService', () => {
     }
 
     beforeEach(() => {
-        wifi = { connect: jest.fn().mockResolvedValue({}), stopHotspot: jest.fn().mockResolvedValue({}) };
+        wifi = {
+            connect: jest.fn().mockResolvedValue({}),
+            stopHotspot: jest.fn().mockResolvedValue({}),
+            getSavedWifiSsids: jest.fn().mockResolvedValue(['HomeNetwork'])
+        };
         auth = {
             hasConfiguredAccount: jest.fn().mockResolvedValue(false),
             verifyInitialPassword: jest.fn().mockResolvedValue(true),
@@ -118,7 +123,7 @@ describe('ConfigureService', () => {
             auth.verifyInitialPassword.mockResolvedValue(false);
             await Failure(SetupDto());
 
-            expect(service.getState()).toEqual({ status: 'idle', errorCode: null, ssid: null, startedAt: null, finishedAt: null });
+            expect(service.getState()).toEqual({ action: null, status: 'idle', errorCode: null, ssid: null, startedAt: null, finishedAt: null });
         });
     });
 
@@ -272,6 +277,106 @@ describe('ConfigureService', () => {
 
             expect(service.getState()).toEqual(expect.objectContaining({ status: 'failed', errorCode: ErrorCode.USER_SAVE_FAILED }));
             expect(wifi.stopHotspot).not.toHaveBeenCalled();
+        });
+    });
+
+    describe('connection to a local network (POST /network/local/connect)', () => {
+        const LocalDto: ConnectLocalNetworkDto = { ssid: 'OfficeNetwork', psk: 'office-secret' };
+
+        it('accepts the request, connects after the grace delay and reports connected_to_local_network / succeeded', async () => {
+            await expect(service.connectToLocalNetwork(LocalDto)).resolves.toBe(true);
+            expect(service.getState()).toEqual(expect.objectContaining({
+                action: 'connected_to_local_network', status: 'in-progress', ssid: 'OfficeNetwork'
+            }));
+
+            await service.whenIdle();
+
+            expect(sleep).toHaveBeenCalledWith(CONFIGURE_RESPONSE_GRACE_MS);
+            expect(wifi.connect).toHaveBeenCalledWith({ ssid: 'OfficeNetwork', password: 'office-secret' });
+            expect(service.getState()).toEqual(expect.objectContaining({
+                action: 'connected_to_local_network', status: 'succeeded', errorCode: null, ssid: 'OfficeNetwork'
+            }));
+            expect(service.getState().finishedAt).not.toBeNull();
+        });
+
+        it('touches neither the account nor the hotspot directly', async () => {
+            await service.connectToLocalNetwork(LocalDto);
+            await service.whenIdle();
+
+            expect(auth.hasConfiguredAccount).not.toHaveBeenCalled();
+            expect(auth.createUser).not.toHaveBeenCalled();
+            expect(auth.completeConfiguredUser).not.toHaveBeenCalled();
+            expect(wifi.stopHotspot).not.toHaveBeenCalled();
+        });
+
+        it('records the WiFi error code when the connection fails', async () => {
+            wifi.connect.mockRejectedValue(new BadRequestException(ErrorBody(HttpStatus.BAD_REQUEST, ErrorCode.WIFI_INVALID_PSK, 'bad psk')));
+
+            await service.connectToLocalNetwork(LocalDto);
+            await service.whenIdle();
+
+            expect(service.getState()).toEqual(expect.objectContaining({
+                action: 'connected_to_local_network', status: 'failed', errorCode: ErrorCode.WIFI_INVALID_PSK
+            }));
+        });
+
+        it('returns 409 CONFIGURE_IN_PROGRESS while another WiFi operation is running', async () => {
+            sleep.mockReturnValueOnce(new Promise<void>(() => undefined));
+            await service.configure(SetupDto());
+
+            await expect(service.connectToLocalNetwork(LocalDto)).rejects.toBeInstanceOf(HttpException);
+            expect(service.getState().action).toBe('configure');
+        });
+
+        it('reports action configure for a configure request', async () => {
+            await Apply(SetupDto());
+
+            expect(service.getState()).toEqual(expect.objectContaining({ action: 'configure', status: 'succeeded' }));
+        });
+    });
+    describe('psk omitted for an already configured network', () => {
+        it('configure accepts the request without psk and connects through the saved profile', async () => {
+            await Apply(SetupDto({ psk: undefined }));
+
+            expect(wifi.getSavedWifiSsids).toHaveBeenCalled();
+            expect(wifi.connect).toHaveBeenCalledWith({ ssid: 'HomeNetwork', password: undefined });
+            expect(service.getState()).toEqual(expect.objectContaining({ action: 'configure', status: 'succeeded' }));
+        });
+
+        it('configure refuses with 400 WIFI_PSK_REQUIRED when the network is not configured yet', async () => {
+            auth.hasConfiguredAccount.mockResolvedValue(true);
+
+            const { status, body } = await Failure(RecoveryDto({ psk: undefined }));
+
+            expect(status).toBe(HttpStatus.BAD_REQUEST);
+            expect(body).toEqual(expect.objectContaining({ code: ErrorCode.WIFI_PSK_REQUIRED, details: { ssid: 'NewNetwork' } }));
+            expect(service.getState().status).toBe('idle');
+            expect(wifi.connect).not.toHaveBeenCalled();
+        });
+
+        it('does not look at the saved networks when psk is provided', async () => {
+            auth.hasConfiguredAccount.mockResolvedValue(true);
+
+            await Apply(RecoveryDto());
+
+            expect(wifi.getSavedWifiSsids).not.toHaveBeenCalled();
+        });
+
+        it('connectToLocalNetwork accepts the request without psk for a configured network', async () => {
+            await expect(service.connectToLocalNetwork({ ssid: 'HomeNetwork' })).resolves.toBe(true);
+            await service.whenIdle();
+
+            expect(wifi.connect).toHaveBeenCalledWith({ ssid: 'HomeNetwork', password: undefined });
+            expect(service.getState()).toEqual(expect.objectContaining({ action: 'connected_to_local_network', status: 'succeeded' }));
+        });
+
+        it('connectToLocalNetwork refuses with WIFI_PSK_REQUIRED for a network that is not configured', async () => {
+            const err = await service.connectToLocalNetwork({ ssid: 'OfficeNetwork' }).then(() => undefined, (e: unknown) => e);
+
+            expect(err).toBeInstanceOf(BadRequestException);
+            expect((err as HttpException).getResponse()).toEqual(expect.objectContaining({ code: ErrorCode.WIFI_PSK_REQUIRED }));
+            expect(service.getState().status).toBe('idle');
+            expect(wifi.connect).not.toHaveBeenCalled();
         });
     });
 });

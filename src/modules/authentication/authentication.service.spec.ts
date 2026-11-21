@@ -29,16 +29,36 @@ describe('AuthenticationService password checks', () => {
         it('compares with the technical account stored in database', async () => {
             repository.findByLogin.mockResolvedValue(User({ login: 'box-01', isConfigured: false, password: hash('label-password') }));
 
-            await expect(service.verifyInitialPassword('label-password')).resolves.toBe(true);
-            await expect(service.verifyInitialPassword('wrong')).resolves.toBe(false);
+            await expect(service.verifyInitialPassword('label-password', 'box-01')).resolves.toBe(true);
+            await expect(service.verifyInitialPassword('wrong', 'box-01')).resolves.toBe(false);
             expect(repository.findByLogin).toHaveBeenCalledWith('box-01');
         });
 
         it('fails when the technical account is missing', async () => {
             repository.findByLogin.mockResolvedValue(null);
 
-            await expect(service.verifyInitialPassword('label-password')).resolves.toBe(false);
+            await expect(service.verifyInitialPassword('label-password', 'box-01')).resolves.toBe(false);
             expect(logger.error).toHaveBeenCalled();
+        });
+    });
+
+    describe('checkPassword', () => {
+        it('accepts the password of the given login and rejects a wrong one', async () => {
+            repository.findByLogin.mockResolvedValue(User());
+
+            await expect(service.checkPassword('alice', 'user-password')).resolves.toBe(true);
+            await expect(service.checkPassword('alice', 'wrong')).resolves.toBe(false);
+            expect(repository.findByLogin).toHaveBeenCalledWith('alice');
+        });
+
+        it.each([
+            ['unknown login', null],
+            ['deleted account', User({ deletedAt: new Date() })]
+        ])('rejects a %s', async (_label, user) => {
+            repository.findByLogin.mockResolvedValue(user);
+
+            await expect(service.checkPassword('alice', 'user-password')).resolves.toBe(false);
+            expect(logger.warn).toHaveBeenCalled();
         });
     });
 

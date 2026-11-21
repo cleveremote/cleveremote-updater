@@ -9,7 +9,7 @@ import { ConfigureState } from './configure.model';
  * - recovery   : compte configuré mais hotspot ouvert (WiFi injoignable ou appui long sur le bouton)
  * - normal     : compte configuré, hotspot fermé
  */
-export type BoxMode = 'starting' | 'connecting' | 'setup' | 'recovery' | 'normal';
+export type BoxMode = 'starting' | 'connecting' | 'setup' | 'recovery' | 'normal' |'connected_to_local_network';
 // Modes transitoires : aucune décision possible tant qu'ils durent
 export type TransitionPhase = Extract<BoxMode, 'starting' | 'connecting'>;
 export type RecoveryReason = 'connection-failed' | 'manual';

@@ -67,7 +67,7 @@ describe('BoxModeService', () => {
             scanNetworks: jest.fn().mockResolvedValue([{ ssid: 'HomeNetwork', signal: 70, security: 'WPA2' }])
         };
         auth = { hasConfiguredAccount: jest.fn().mockResolvedValue(true) };
-        configureState = { status: 'idle', errorCode: null, ssid: null, startedAt: null, finishedAt: null };
+        configureState = { action: null, status: 'idle', errorCode: null, ssid: null, startedAt: null, finishedAt: null };
         logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
         service = new BoxModeService(
             wifi as unknown as WifiService,
@@ -269,6 +269,7 @@ describe('BoxModeService', () => {
             net.reachable = false;
             await Boot();
             configureState = {
+                action: 'configure',
                 status: 'failed',
                 errorCode: ErrorCode.WIFI_INVALID_PSK,
                 ssid: 'HomeNetwork',

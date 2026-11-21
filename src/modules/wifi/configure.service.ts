@@ -14,7 +14,8 @@ import { Role } from '../authentication/role.enum';
 import { ConfigureDto } from './dto/configure.dto';
 import { GlobalSettingsService } from '../global-settings/global-settings.service';
 import { ErrorCode, ErrorBody, GetErrorCode } from '../../common/errors/error-code';
-import { ConfigureState } from './configure.model';
+import { ConfigureAction, ConfigureState } from './configure.model';
+import { ConnectLocalNetworkDto } from './dto/connect-local-network.dto';
 import { CONFIGURE_RESPONSE_GRACE_MS } from './wifi.constants';
 
 const SETUP_REQUIRED_FIELDS = ['deviceName', 'password'] as const;
@@ -27,10 +28,13 @@ const SETUP_REQUIRED_FIELDS = ['deviceName', 'password'] as const;
  * Un refus de la requête lève une HttpException dont le corps porte un `code` (cf. ErrorCode) que le front traduit.
  * Un échec en arrière-plan porte le même type de code dans getState().errorCode : une erreur WiFi déjà codée par
  * WifiService (WIFI_INVALID_PSK, WIFI_NETWORK_NOT_FOUND...) est relayée telle quelle.
+ *
+ * connectToLocalNetwork() (POST /network/local/connect) suit le même principe pour un simple changement de réseau
+ * WiFi et partage le même état : getState().action indique quelle opération l'a produit.
  */
 @Injectable()
 export class ConfigureService {
-    private _state: ConfigureState = { status: 'idle', errorCode: null, ssid: null, startedAt: null, finishedAt: null };
+    private _state: ConfigureState = { action: null, status: 'idle', errorCode: null, ssid: null, startedAt: null, finishedAt: null };
     private _pending: Promise<void> | null = null;
 
     public constructor(
@@ -51,12 +55,22 @@ export class ConfigureService {
             this._assertSetupFields(dto);
         }
         await this._assertCurrentPassword(dto, isSetup);
+        await this._assertPskOrConfiguredNetwork(dto.ssid, dto.psk);
         // revérifié sans await avant de poser l'état : deux requêtes simultanées ne peuvent pas démarrer toutes les deux
         this._assertNotInProgress();
-        this._state = { status: 'in-progress', errorCode: null, ssid: dto.ssid, startedAt: new Date().toISOString(), finishedAt: null };
-        this._pending = this._apply(dto, isSetup).finally(() => {
-            this._pending = null;
-        });
+        const mode = isSetup ? 'setup' : 'recovery';
+        this._start('configure', dto.ssid, mode, () => (isSetup ? this._setup(dto) : this._recovery(dto)));
+        return true;
+    }
+
+    // Connexion à un nouveau réseau WiFi local, sans toucher au compte. Résolue dès que la requête est acceptée.
+    // En cas d'échec, WifiService.connect() rouvre le hotspot.
+    public async connectToLocalNetwork(dto: ConnectLocalNetworkDto): Promise<boolean> {
+        this._assertNotInProgress();
+        await this._assertPskOrConfiguredNetwork(dto.ssid, dto.psk);
+        // revérifié sans await avant de poser l'état (cf. configure())
+        this._assertNotInProgress();
+        this._start('connected_to_local_network', dto.ssid, 'local-network', () => this._connect(dto.ssid, dto.psk));
         return true;
     }
 
@@ -70,19 +84,26 @@ export class ConfigureService {
         return this._pending ?? Promise.resolve();
     }
 
+    // À appeler sans await depuis le dernier _assertNotInProgress() : deux requêtes simultanées ne peuvent pas démarrer
+    private _start(action: ConfigureAction, ssid: string, mode: string, steps: () => Promise<void>): void {
+        this._state = { action, status: 'in-progress', errorCode: null, ssid, startedAt: new Date().toISOString(), finishedAt: null };
+        this._pending = this._apply(ssid, mode, steps).finally(() => {
+            this._pending = null;
+        });
+    }
+
     // Ne rejette jamais : tout échec est mémorisé dans l'état
-    private async _apply(dto: ConfigureDto, isSetup: boolean): Promise<void> {
-        const mode = isSetup ? 'setup' : 'recovery';
+    private async _apply(ssid: string, mode: string, steps: () => Promise<void>): Promise<void> {
         try {
-            // la réponse 202 doit avoir atteint le front avant que la bascule ne coupe le hotspot
+            // la réponse 202 doit avoir atteint le front avant que la bascule ne coupe le réseau qu'il utilise
             await this._sleep(CONFIGURE_RESPONSE_GRACE_MS);
-            await (isSetup ? this._setup(dto) : this._recovery(dto));
+            await steps();
             this._finish(null);
-            this._logger.info({ ssid: dto.ssid, mode }, 'configure: succeeded');
+            this._logger.info({ ssid, mode }, 'configure: succeeded');
         } catch (err) {
             const errorCode = GetErrorCode(err) ?? ErrorCode.CONFIGURE_FAILED;
             this._finish(errorCode);
-            this._logger.error({ err, ssid: dto.ssid, mode, errorCode }, 'configure: failed');
+            this._logger.error({ err, ssid, mode, errorCode }, 'configure: failed');
         }
     }
 
@@ -113,6 +134,19 @@ export class ConfigureService {
         }
     }
 
+    // psk facultatif pour un réseau déjà configuré (profil réactivé par WifiService) : refusé ici en 400 plutôt qu'en arrière-plan
+    private async _assertPskOrConfiguredNetwork(ssid: string, psk: string | undefined): Promise<void> {
+        if (psk !== undefined) {
+            return;
+        }
+        const savedSsids = await this._wifiService.getSavedWifiSsids();
+        if (!savedSsids.includes(ssid)) {
+            throw new BadRequestException(ErrorBody(
+                HttpStatus.BAD_REQUEST, ErrorCode.WIFI_PSK_REQUIRED, 'psk is required for a WiFi network that is not configured yet', { ssid }
+            ));
+        }
+    }
+
     private async _assertCurrentPassword(dto: ConfigureDto, isSetup: boolean): Promise<void> {
         const isValid = isSetup
             ? await this._authenticationService.verifyInitialPassword(dto.currentPassword, dto.login)
@@ -121,6 +155,7 @@ export class ConfigureService {
             this._logger.warn({ login: dto.login, mode: isSetup ? 'setup' : 'recovery' }, 'configure: invalid current password');
             this._state = {
                 ...this._state,
+                action: 'configure',
                 status: 'failed',
                 errorCode: ErrorCode.INVALID_CURRENT_PASSWORD,
                 finishedAt: new Date().toISOString()
@@ -130,7 +165,7 @@ export class ConfigureService {
     }
 
     private async _setup(dto: ConfigureDto): Promise<void> {
-        await this._connect(dto);
+        await this._connect(dto.ssid, dto.psk);
         if (dto.localCoordinates) {
             await this._saveLocalCoordinates(dto);
         }
@@ -141,7 +176,7 @@ export class ConfigureService {
     // Recovery : le WiFi change et les informations déjà présentes sont complétées par les champs fournis
     // (coordonnées, email, nouveau mot de passe) ; un champ absent garde sa valeur
     private async _recovery(dto: ConfigureDto): Promise<void> {
-        await this._connect(dto);
+        await this._connect(dto.ssid, dto.psk);
         if (dto.localCoordinates) {
             await this._saveLocalCoordinates(dto);
         }
@@ -149,11 +184,11 @@ export class ConfigureService {
         await this._stopHotspot();
     }
 
-    private async _connect(dto: ConfigureDto): Promise<void> {
+    private async _connect(ssid: string, psk: string | undefined): Promise<void> {
         try {
-            await this._wifiService.connect({ ssid: dto.ssid, password: dto.psk });
+            await this._wifiService.connect({ ssid, password: psk });
         } catch (err) {
-            this._logger.error({ err, ssid: dto.ssid }, 'configure: failed to connect to WiFi network');
+            this._logger.error({ err, ssid }, 'configure: failed to connect to WiFi network');
             throw this._toCodedError(err, ErrorCode.WIFI_CONNECT_FAILED, 'failed to connect to WiFi network');
         }
     }

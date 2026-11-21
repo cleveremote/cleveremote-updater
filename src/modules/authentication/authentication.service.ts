@@ -39,12 +39,14 @@ export class AuthenticationService implements OnApplicationBootstrap {
         return this._authenticationRepository.existsConfigured();
     }
 
-    public async checkPassword(data: AuthenticationModel): Promise<boolean> {
-        const isValid = await bcrypt.compare(data.password, (await this._authenticationRepository.get()).password);
-        if (!isValid) {
-            this._logger.warn({ login: data.login }, 'authentication failed');
+    // Vérifie le mot de passe du compte `login` (compte actif uniquement)
+    public async checkPassword(login: string, password: string): Promise<boolean> {
+        const user = await this._authenticationRepository.findByLogin(login);
+        if (!user?.password || user.deletedAt) {
+            this._logger.warn({ login }, 'authentication failed: no active account for this login');
+            return false;
         }
-        return isValid;
+        return this._comparePassword(password, user);
     }
 
     // Setup : mot de passe de l'étiquette, posé (haché) sur le compte technique par initAuthentication().

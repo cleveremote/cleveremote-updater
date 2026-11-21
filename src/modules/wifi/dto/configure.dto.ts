@@ -3,11 +3,12 @@ import { IsEmail, IsOptional, IsString, Length, ValidateNested } from 'class-val
 import { LocalCoordinatesDto } from './local-coordinates.dto';
 
 /**
- * - setup    : { deviceName, ssid, psk, login, email?, currentPassword, password, localCoordinates? }
- * - recovery : { ssid, psk, login, currentPassword, email?, password?, localCoordinates? }
+ * - setup    : { deviceName, ssid, psk?, login, email?, currentPassword, password, localCoordinates? }
+ * - recovery : { ssid, psk?, login, currentPassword, email?, password?, localCoordinates? }
  * Le mode n'est connu qu'au moment de l'appel : les champs propres au setup sont donc optionnels ici
  * et leur présence est vérifiée par ConfigureService. En recovery, email / password / localCoordinates
  * complètent les informations déjà présentes ; absents, ils gardent leur valeur.
+ * psk n'est obligatoire que pour un réseau pas encore configuré sur la box (vérifié par ConfigureService).
  */
 export class ConfigureDto {
 
@@ -20,9 +21,13 @@ export class ConfigureDto {
     @Length(1, 32)
     public ssid: string;
 
+    // Facultatif si le réseau est déjà configuré sur la box (isConfigured dans getNetworksList) :
+    // la connexion réutilise alors le profil mémorisé. Une chaîne vide vaut absence.
+    @Transform(({ value }) => (value === '' ? undefined : value))
+    @IsOptional()
     @IsString()
     @Length(8, 64)
-    public psk: string;
+    public psk?: string;
 
     @IsString()
     @Length(1, 64)

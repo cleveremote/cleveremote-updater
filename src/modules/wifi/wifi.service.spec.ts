@@ -314,12 +314,63 @@ describe('WifiService', () => {
         expect(networks).toEqual([{ ssid: 'HomeNetwork', signal: 80, security: 'WPA2' }]);
     });
 
+    it('listNetworks flags the visible networks that already have a saved client profile', async () => {
+        nmcli.run.mockImplementation((args: string[]) => {
+            if (args.includes('NAME,TYPE')) {
+                return Promise.resolve({ stdout: 'HomeNetwork:802-11-wireless\ncleveremote-hotspot:802-11-wireless\n', stderr: '' });
+            }
+            if (args.includes('802-11-wireless.ssid')) {
+                return Promise.resolve({ stdout: `802-11-wireless.ssid:${args[args.length - 1]}`, stderr: '' });
+            }
+            if (args.includes('list')) {
+                return Promise.resolve({ stdout: 'HomeNetwork:80:WPA2\nNeighbour:40:WPA2\n:30:WPA2\n', stderr: '' });
+            }
+            return Promise.resolve({ stdout: '', stderr: '' });
+        });
+
+        await expect(service.listNetworks()).resolves.toEqual([
+            { ssid: 'HomeNetwork', signal: 80, security: 'WPA2', isConfigured: true, isConnected: false },
+            { ssid: 'Neighbour', signal: 40, security: 'WPA2', isConfigured: false, isConnected: false },
+            { ssid: '', signal: 30, security: 'WPA2', isConfigured: false, isConnected: false }
+        ]);
+    });
+
+    it.each([
+        ['connected', true],
+        ['connecting', false]
+    ])('listNetworks flags the network the box is a client of (device state %s => isConnected %s)', async (state, expected) => {
+        nmcli.run.mockImplementation((args: string[]) => {
+            if (args.includes('NAME,TYPE')) {
+                return Promise.resolve({ stdout: 'HomeNetwork:802-11-wireless\n', stderr: '' });
+            }
+            if (args.includes('--active')) {
+                return Promise.resolve({ stdout: 'HomeNetwork:wlan0:802-11-wireless\n', stderr: '' });
+            }
+            if (args.includes('GENERAL.STATE,GENERAL.CONNECTION')) {
+                return Promise.resolve({ stdout: `GENERAL.STATE:100 (${state})\nGENERAL.CONNECTION:HomeNetwork\n`, stderr: '' });
+            }
+            if (args.includes('802-11-wireless.ssid')) {
+                return Promise.resolve({ stdout: `802-11-wireless.ssid:${args[args.length - 1]}`, stderr: '' });
+            }
+            if (args.includes('list')) {
+                return Promise.resolve({ stdout: 'HomeNetwork:80:WPA2\nNeighbour:40:WPA2\n', stderr: '' });
+            }
+            return Promise.resolve({ stdout: '', stderr: '' });
+        });
+
+        await expect(service.listNetworks()).resolves.toEqual([
+            { ssid: 'HomeNetwork', signal: 80, security: 'WPA2', isConfigured: true, isConnected: expected },
+            { ssid: 'Neighbour', signal: 40, security: 'WPA2', isConfigured: false, isConnected: false }
+        ]);
+    });
+
     it.each([
         ['startHotspot', () => service.startHotspot()],
         ['stopHotspot', () => service.stopHotspot()],
         ['connect', () => service.connect({ ssid: 'x', password: 'password1' })],
         ['getStatus', () => service.getStatus()],
-        ['scanNetworks', () => service.scanNetworks()]
+        ['scanNetworks', () => service.scanNetworks()],
+        ['listNetworks', () => service.listNetworks()]
     ])('%s rejects and never calls nmcli when the platform is not Linux', async (_name, invoke) => {
         jest.spyOn(os, 'platform').mockReturnValue('darwin');
         await expect(invoke()).rejects.toThrow();
@@ -348,6 +399,63 @@ describe('WifiService', () => {
         await expect(service.getLinkState()).resolves.toBe('client');
         ConfigureNmcliRun({ deviceStdout: 'GENERAL.STATE:70 (connecting (getting IP configuration))\nGENERAL.CONNECTION:HomeNetwork' });
         await expect(service.getLinkState()).resolves.toBe('none');
+    });
+
+    describe('connect without password (network already configured)', () => {
+        const SAVED_PROFILE_UP_ARGS = ['-w', String(NMCLI_CONNECT_WAIT_S), 'connection', 'up', 'netplan-wlan0-HomeNetwork', 'ifname', 'wlan0'];
+
+        function ConfigureSavedProfiles(options: { upError?: NmcliError } = {}): void {
+            nmcli.run.mockImplementation((args: string[]) => {
+                if (args.includes('NAME,TYPE')) {
+                    const stdout = 'netplan-wlan0-HomeNetwork:802-11-wireless\ncleveremote-hotspot:802-11-wireless\n';
+                    return Promise.resolve({ stdout, stderr: '' });
+                }
+                if (args.includes('802-11-wireless.ssid')) {
+                    const ssid = args[args.length - 1] === 'netplan-wlan0-HomeNetwork' ? 'HomeNetwork' : 'cleveremote-setup';
+                    return Promise.resolve({ stdout: `802-11-wireless.ssid:${ssid}`, stderr: '' });
+                }
+                if (args.includes('list')) {
+                    return Promise.resolve({ stdout: 'HomeNetwork:80:WPA2\n', stderr: '' });
+                }
+                if (options.upError !== undefined && JSON.stringify(args) === JSON.stringify(SAVED_PROFILE_UP_ARGS)) {
+                    return Promise.reject(options.upError);
+                }
+                return Promise.resolve({ stdout: '', stderr: '' });
+            });
+        }
+
+        it('activates the saved profile of the SSID as is, without recreating it', async () => {
+            ConfigureSavedProfiles();
+
+            await service.connect({ ssid: 'HomeNetwork' });
+
+            const calledArgSets = nmcli.run.mock.calls.map((call) => call[0]);
+            expect(nmcli.run).toHaveBeenCalledWith(SAVED_PROFILE_UP_ARGS, NMCLI_CONNECT_TIMEOUT_MS);
+            expect(calledArgSets.some((args) => args[1] === 'add' || args[1] === 'delete' && args[2] !== 'cleveremote-hotspot')).toBe(false);
+        });
+
+        it('refuses with WIFI_PSK_REQUIRED before touching the hotspot when no profile exists for the SSID', async () => {
+            ConfigureSavedProfiles();
+
+            const err = await service.connect({ ssid: 'UnknownNetwork' }).then(() => undefined, (e: unknown) => e);
+
+            expect(err).toBeInstanceOf(BadRequestException);
+            expect((err as BadRequestException).getResponse()).toEqual(expect.objectContaining({ code: 'WIFI_PSK_REQUIRED' }));
+            expect(nmcli.run.mock.calls.some((call) => call[0].includes('cleveremote-hotspot') && call[0][1] === 'down')).toBe(false);
+        });
+
+        it('keeps the saved profile and restarts the hotspot when the activation fails', async () => {
+            config.get.mockImplementation((key: string) => (key === 'WIFI_HOTSPOT_PASSWORD' ? 'supersecret' : undefined));
+            ConfigureSavedProfiles({
+                upError: new NmcliError('failed', [], 4, '', 'Error: Connection activation failed: Secrets were required, but not provided', false)
+            });
+
+            await expect(service.connect({ ssid: 'HomeNetwork' })).rejects.toBeInstanceOf(BadRequestException);
+
+            const calledArgSets = nmcli.run.mock.calls.map((call) => call[0]);
+            expect(calledArgSets).not.toContainEqual(['connection', 'delete', 'netplan-wlan0-HomeNetwork']);
+            expect(calledArgSets).toContainEqual(['connection', 'up', 'cleveremote-hotspot']);
+        });
     });
 
     it('getSavedWifiSsids lists saved client WiFi profiles, excluding the hotspot and other connection types', async () => {

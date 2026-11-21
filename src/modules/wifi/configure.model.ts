@@ -8,8 +8,17 @@ import { ErrorCode } from '../../common/errors/error-code';
  */
 export type ConfigureStatus = 'idle' | 'in-progress' | 'succeeded' | 'failed';
 
-// Résultat du dernier POST /updater/configure accepté, exposé par GET /updater/getMode
+/**
+ * Opération à l'origine de l'état :
+ * - configure                  : POST /updater/configure (setup / recovery)
+ * - connected_to_local_network : POST /network/local/connect (simple changement de réseau WiFi)
+ */
+export type ConfigureAction = 'configure' | 'connected_to_local_network';
+
+// Résultat de la dernière opération WiFi acceptée (configure ou network/local/connect), exposé par GET /updater/getMode
 export interface ConfigureState {
+    // null tant que status === 'idle'
+    action: ConfigureAction | null;
     status: ConfigureStatus;
     // non null uniquement si status === 'failed'
     errorCode: ErrorCode | null;

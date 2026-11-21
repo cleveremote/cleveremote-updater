@@ -25,6 +25,8 @@ export enum ErrorCode {
     WIFI_NMCLI_UNAVAILABLE = 'WIFI_NMCLI_UNAVAILABLE',
     WIFI_TIMEOUT = 'WIFI_TIMEOUT',
     WIFI_INVALID_PSK = 'WIFI_INVALID_PSK',
+    // psk absent alors qu'aucun profil n'est mémorisé pour ce SSID (psk facultatif seulement pour un réseau déjà configuré)
+    WIFI_PSK_REQUIRED = 'WIFI_PSK_REQUIRED',
     WIFI_NETWORK_NOT_FOUND = 'WIFI_NETWORK_NOT_FOUND',
     WIFI_INTERFACE_BUSY = 'WIFI_INTERFACE_BUSY',
     WIFI_HOTSPOT_PASSWORD_NOT_CONFIGURED = 'WIFI_HOTSPOT_PASSWORD_NOT_CONFIGURED',

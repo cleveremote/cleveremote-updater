@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import {
+    BadRequestException,
     HttpStatus,
     Injectable,
     InternalServerErrorException,
@@ -33,6 +34,13 @@ import {
 
 export { WifiNetwork } from './nmcli-output.parser';
 
+// Réseau visible, annoté pour le front : isConfigured = un profil client mémorisé existe déjà pour ce SSID ;
+// isConnected = la box est actuellement connectée (mode client, interface "connected") à ce SSID
+export interface WifiNetworkListItem extends WifiNetwork {
+    isConfigured: boolean;
+    isConnected: boolean;
+}
+
 export interface WifiStatus {
     interface: string;
     mode: 'ap' | 'client' | 'disconnected';
@@ -44,6 +52,12 @@ export interface WifiStatus {
 // État réel du lien WiFi, lu en une seule commande nmcli (adapté à un polling fréquent) :
 // 'hotspot' / 'client' uniquement si l'interface est "connected" ("connecting"/"deactivating" => 'none').
 export type WifiLinkState = 'hotspot' | 'client' | 'none';
+
+// Profil client WiFi mémorisé par NetworkManager
+interface SavedWifiProfile {
+    name: string;
+    ssid: string;
+}
 
 const NMCLI_WIFI_CONNECTION_TYPE = '802-11-wireless';
 const NMCLI_KEY_MGMT_WPA_PSK = 'wpa-psk';
@@ -96,13 +110,20 @@ export class WifiService implements OnApplicationBootstrap, OnModuleDestroy {
         return this.getStatus();
     }
 
+    // Sans mot de passe, le profil déjà mémorisé pour ce SSID est réactivé tel quel ; à défaut de profil,
+    // la requête est refusée (WIFI_PSK_REQUIRED) avant de toucher au hotspot.
     public async connect(dto: ConnectWifiDto): Promise<WifiStatus> {
         this._assertLinux();
         const iface = this._interfaceName();
+        const savedProfile = dto.password === undefined ? await this._requireSavedProfile(dto.ssid) : undefined;
         await this._deleteHotspotProfile(this._hotspotConnectionName());
         try {
             const network = await this._waitForNetworkVisible(iface, dto.ssid);
-            await this._activateClientProfile(iface, dto, network);
+            if (savedProfile === undefined) {
+                await this._activateClientProfile(iface, dto, network);
+            } else {
+                await this._activateSavedProfile(iface, savedProfile);
+            }
         } catch (err) {
             await this._restartHotspotAfterFailedConnect();
             throw err;
@@ -132,6 +153,20 @@ export class WifiService implements OnApplicationBootstrap, OnModuleDestroy {
         return NmcliOutputParser.parseWifiList(result.stdout);
     }
 
+    public async listNetworks(): Promise<WifiNetworkListItem[]> {
+        const [networks, savedSsids, status] = await Promise.all([this.scanNetworks(), this.getSavedWifiSsids(), this.getStatus()]);
+        const saved = new Set(savedSsids);
+        const connectedSsid = status.mode === 'client' && status.deviceState === 'connected' ? status.ssid : null;
+        return networks.map((network) => {
+            const hasSsid = network.ssid.length > 0;
+            return {
+                ...network,
+                isConfigured: hasSsid && saved.has(network.ssid),
+                isConnected: hasSsid && network.ssid === connectedSsid
+            };
+        });
+    }
+
     public async getLinkState(): Promise<WifiLinkState> {
         this._assertLinux();
         const result = await this._run(
@@ -144,18 +179,8 @@ export class WifiService implements OnApplicationBootstrap, OnModuleDestroy {
     // SSID des réseaux WiFi client mémorisés par NetworkManager (profil hotspot exclu)
     public async getSavedWifiSsids(): Promise<string[]> {
         this._assertLinux();
-        const result = await this._run(['-t', '-f', 'NAME,TYPE', 'connection', 'show'], 'list saved connections');
-        const names = NmcliOutputParser.parseConnectionList(result.stdout)
-            .filter((row) => row.type === NMCLI_WIFI_CONNECTION_TYPE && row.name !== this._hotspotConnectionName())
-            .map((row) => row.name);
-        const ssids: string[] = [];
-        for (const name of names) {
-            const ssid = await this._getSsid(name);
-            if (ssid !== null && !ssids.includes(ssid)) {
-                ssids.push(ssid);
-            }
-        }
-        return ssids;
+        const profiles = await this._listSavedWifiProfiles();
+        return [...new Set(profiles.map((profile) => profile.ssid))];
     }
 
     // Demande à NetworkManager d'activer le meilleur profil client disponible (y compris un profil dont
@@ -199,6 +224,41 @@ export class WifiService implements OnApplicationBootstrap, OnModuleDestroy {
             await this._runIgnoringFailure(['connection', 'delete', conName]);
             throw err;
         }
+    }
+
+    // Profil existant (créé par la box ou généré par netplan) : activé sans être modifié, et conservé en cas
+    // d'échec puisque rien de nouveau n'a été saisi. Un mot de passe devenu faux remonte en WIFI_INVALID_PSK.
+    private async _activateSavedProfile(iface: string, profile: SavedWifiProfile): Promise<void> {
+        await this._run(
+            ['-w', String(NMCLI_CONNECT_WAIT_S), 'connection', 'up', profile.name, 'ifname', iface],
+            'connect to network: activate saved profile',
+            NMCLI_CONNECT_TIMEOUT_MS
+        );
+    }
+
+    private async _requireSavedProfile(ssid: string): Promise<SavedWifiProfile> {
+        const profile = (await this._listSavedWifiProfiles()).find((candidate) => candidate.ssid === ssid);
+        if (profile === undefined) {
+            throw new BadRequestException(ErrorBody(
+                HttpStatus.BAD_REQUEST, ErrorCode.WIFI_PSK_REQUIRED, 'a password is required for a WiFi network that is not configured yet'
+            ));
+        }
+        return profile;
+    }
+
+    private async _listSavedWifiProfiles(): Promise<SavedWifiProfile[]> {
+        const result = await this._run(['-t', '-f', 'NAME,TYPE', 'connection', 'show'], 'list saved connections');
+        const names = NmcliOutputParser.parseConnectionList(result.stdout)
+            .filter((row) => row.type === NMCLI_WIFI_CONNECTION_TYPE && row.name !== this._hotspotConnectionName())
+            .map((row) => row.name);
+        const profiles: SavedWifiProfile[] = [];
+        for (const name of names) {
+            const ssid = await this._getSsid(name);
+            if (ssid !== null) {
+                profiles.push({ name, ssid });
+            }
+        }
+        return profiles;
     }
 
     // WPA3 seul => SAE ; WPA1/WPA2, mode mixte WPA2/WPA3 ou réseau absent du scan => WPA-PSK
